@@ -1,0 +1,22 @@
+# 환경
+venv/
+.env
+__pycache__/
+*.py[cod]
+
+# 데이터 (원본은 커밋하지 않음)
+data/raw/
+data/processed/*.parquet
+data/processed/*.csv
+
+# 노트북
+.ipynb_checkpoints/
+
+# 모델 산출물
+models/
+*.json.model
+*.pkl
+
+# OS / 에디터
+.DS_Store
+.vscode/

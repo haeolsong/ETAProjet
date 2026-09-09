@@ -1,0 +1,18 @@
+# 프로젝트 린트 설정. 상위 디렉터리 설정을 물려받지 않도록 여기서 고정한다.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "I",   # import 정렬
+    "UP",  # 낡은 문법
+    "B",   # 흔한 버그 패턴
+]
+ignore = [
+    "E501",  # 줄 길이는 formatter가 처리
+]
+
+[format]
+quote-style = "double"
