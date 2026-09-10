@@ -102,6 +102,32 @@ def base(chart: alt.Chart) -> alt.Chart:
     ).configure_view(strokeWidth=0)
 
 
+def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -> alt.Chart:
+    """모델별 가로 막대. 값이 작을수록 좋은 지표는 sort='x', 클수록 좋으면 '-x'."""
+    chart = (
+        alt.Chart(data)
+        .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+        .encode(
+            x=alt.X(f"{field}:Q", title=title, axis=alt.Axis(format=fmt)),
+            y=alt.Y("model:N", sort=sort, title=None),
+            color=alt.Color("model:N", scale=alt.Scale(range=SERIES), legend=None),
+            tooltip=[
+                "model:N",
+                alt.Tooltip("MAE:Q", format=".2f"),
+                alt.Tooltip("RMSE:Q", format=".2f"),
+                alt.Tooltip("R2:Q", format=".3f"),
+                alt.Tooltip("적중률:Q", format=".0%"),
+                alt.Tooltip("오경보율:Q", format=".0%"),
+            ],
+        )
+    )
+    # aqua 슬롯이 밝은 배경에서 대비 3:1 미만이라 값을 직접 표기한다.
+    labels = chart.mark_text(align="left", dx=6, color="#52514e").encode(
+        text=alt.Text(f"{field}:Q", format=fmt)
+    )
+    return base(alt.layer(chart, labels).properties(height=170))
+
+
 st.title("✈️ 김해공항 항공편 ETA 예측")
 st.caption("동아대학교 도전학기제 · 송하얼 · 박성준")
 
@@ -366,27 +392,30 @@ with tab_model:
             f"{latest.run_at.iloc[0]}"
         )
 
-        chart = (
-            alt.Chart(latest)
-            .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
-            .encode(
-                x=alt.X("MAE:Q", title="MAE (분) — 낮을수록 좋음"),
-                y=alt.Y("model:N", sort="x", title=None),
-                color=alt.Color("model:N", scale=alt.Scale(range=SERIES), legend=None),
-                tooltip=[
-                    "model:N",
-                    alt.Tooltip("MAE:Q", format=".2f"),
-                    alt.Tooltip("RMSE:Q", format=".2f"),
-                    alt.Tooltip("R2:Q", format=".3f"),
-                ],
+        left, right = st.columns(2)
+        with left:
+            st.altair_chart(
+                model_bar(latest, "MAE", "MAE (분) — 낮을수록 좋음", ".2f", "x"),
+                use_container_width=True,
             )
-        )
-        # aqua 슬롯이 밝은 배경에서 대비 3:1 미만이라 값을 직접 표기한다.
-        labels = chart.mark_text(align="left", dx=6, color="#52514e").encode(
-            text=alt.Text("MAE:Q", format=".2f")
-        )
-        st.altair_chart(
-            base(alt.layer(chart, labels).properties(height=170)), use_container_width=True
+        with right:
+            if latest["적중률"].notna().any():
+                n_delayed = int(latest["실제지연편수"].iloc[0])
+                st.altair_chart(
+                    model_bar(
+                        latest, "적중률", "15분 이상 지연 적중률 — 높을수록 좋음", ".0%", "-x"
+                    ),
+                    use_container_width=True,
+                )
+                st.caption(f"테스트셋의 15분 이상 지연 {n_delayed}편 중 경고한 비율입니다.")
+            else:
+                st.info("이 기록에는 적중률이 없습니다. `python src/train.py` 를 다시 실행하세요.")
+
+        st.info(
+            "**두 지표의 순위가 다르면 MAE 쪽을 의심하세요.** 지연은 0 근처에 몰려 있어 "
+            "상수 예측(베이스라인)이 전체 MAE 를 낮게 받지만, 정작 예측이 필요한 15분 이상 "
+            "지연은 구조적으로 한 건도 잡지 못해 적중률이 0% 입니다. "
+            "적중률만 봐도 안 됩니다 — 막대에 커서를 올리면 오경보율이 같이 나옵니다."
         )
 
         st.warning(
