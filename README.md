@@ -140,7 +140,7 @@ python src/preprocess.py
 # 7. 학습·평가 (→ data/processed/metrics.csv)
 python src/train.py
 
-# 8. 대시보드 실행
+# 8. 대시보드 실행 (수집 현황 · 지연 분석 · 기상 · 모델 성능)
 streamlit run dashboard/app.py
 ```
 
