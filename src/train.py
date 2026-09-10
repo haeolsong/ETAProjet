@@ -42,6 +42,7 @@ FEATURES_PRE = [
     "wind_dir",
     "wind_ms",
     "gust_ms",
+    "crosswind_ms",  # 활주로에 수직인 성분. 김해는 지형 탓에 횡풍 영향이 크다
     # precip_mm 은 넣지 않는다. RKPK 는 시간당 강수량을 보고하지 않아 항상 0 이다
     # (notebooks/01_metar_eda.ipynb §3). 강수 유무는 wx_ra 로만 알 수 있다.
     "visibility_km",

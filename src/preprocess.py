@@ -10,6 +10,7 @@ Iowa State 아카이브는 미국 단위(°F, knot, mile, inch)로 내려주므�
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -17,6 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import DATA_PROCESSED, DATA_RAW, ICAO  # noqa: E402
 
 # 기상현상 코드 중 지연과 직결되는 것들
+# 김해공항 활주로 진방위(TRUE BRG). 18L·18R 이 평행이라 하나로 계산한다.
+# 출처: 국토교통부 eAIP RKPK AD 2.12 (18L/18R = 173.95°, 36L/36R = 353.95°)
+# METAR 풍향도 진북 기준이므로 자기편차 보정이 필요 없다.
+RUNWAY_BEARING = 173.95
+
 SIGNIFICANT_WX = {
     "TS": "뇌전",
     "FG": "안개",
@@ -59,6 +65,11 @@ def to_metric(df: pd.DataFrame) -> pd.DataFrame:
 
     # 기온-이슬점 차. 작을수록 안개 위험이 크다.
     out["dewpoint_spread"] = out["temp_c"] - out["dewpoint_c"]
+
+    # 활주로에 수직인 바람 성분(횡풍). 좌풍·우풍 모두 착륙을 어렵게 하므로 절댓값을 쓴다.
+    # 무풍(풍속 0)이면 풍향이 0 으로 기록되지만 곱해져 0 이 되므로 따로 걸러내지 않는다.
+    angle = np.radians(out["wind_dir"] - RUNWAY_BEARING)
+    out["crosswind_ms"] = (out["wind_ms"] * np.sin(angle)).abs()
 
     wx = df["wxcodes"].fillna("")
     for code, name in SIGNIFICANT_WX.items():
