@@ -28,32 +28,50 @@ GRID = "#e6e5e1"
 
 MAX_BACKFILL_DAYS = 3
 
+METAR_PATH = DATA_PROCESSED / f"metar_{ICAO}.parquet"
+DATASET_PATH = DATA_PROCESSED / "dataset.parquet"
+METRICS_PATH = DATA_PROCESSED / "metrics.csv"
+FLIGHTS_GLOB = "flights_????-??-??.csv"
+
 st.set_page_config(page_title="김해공항 ETA 예측", page_icon="✈️", layout="wide")
 
 
+def stamp(*paths: Path) -> tuple:
+    """파일 수정시각 묶음. 로더에 캐시 키로 넘긴다.
+
+    st.cache_data 는 인자가 같으면 파일이 바뀌어도 캐시된 값을 돌려준다.
+    수집기가 매일 04:00 에 돌므로 대시보드를 켜 둔 채 데이터가 갱신되는 일이
+    흔하다. 수정시각을 키로 넘겨야 그때 다시 읽는다.
+    """
+    return tuple(p.stat().st_mtime if p.exists() else None for p in paths)
+
+
+def raw_stamp() -> tuple:
+    """수집 파일 목록과 수정시각. 새 날짜가 들어오면 값이 달라진다."""
+    return tuple((f.name, f.stat().st_mtime) for f in sorted(DATA_RAW.glob(FLIGHTS_GLOB)))
+
+
+# 아래 로더의 key 인자는 캐시 무효화 전용이다. 함수 안에서 쓰지 않는다.
 @st.cache_data
-def load_metar() -> pd.DataFrame | None:
-    path = DATA_PROCESSED / f"metar_{ICAO}.parquet"
-    return pd.read_parquet(path) if path.exists() else None
+def load_metar(key: tuple) -> pd.DataFrame | None:
+    return pd.read_parquet(METAR_PATH) if METAR_PATH.exists() else None
 
 
 @st.cache_data
-def load_dataset() -> pd.DataFrame | None:
-    path = DATA_PROCESSED / "dataset.parquet"
-    return pd.read_parquet(path) if path.exists() else None
+def load_dataset(key: tuple) -> pd.DataFrame | None:
+    return pd.read_parquet(DATASET_PATH) if DATASET_PATH.exists() else None
 
 
 @st.cache_data
-def load_metrics() -> pd.DataFrame | None:
-    path = DATA_PROCESSED / "metrics.csv"
-    return pd.read_csv(path) if path.exists() else None
+def load_metrics(key: tuple) -> pd.DataFrame | None:
+    return pd.read_csv(METRICS_PATH) if METRICS_PATH.exists() else None
 
 
 @st.cache_data
-def load_collection_days() -> pd.DataFrame:
+def load_collection_days(key: tuple) -> pd.DataFrame:
     """운항일별 수집 건수. 파일이 없는 날은 0 으로 채워 구멍을 드러낸다."""
     counts = {}
-    for f in sorted(DATA_RAW.glob("flights_????-??-??.csv")):
+    for f in sorted(DATA_RAW.glob(FLIGHTS_GLOB)):
         day = pd.to_datetime(f.stem.removeprefix("flights_")).date()
         counts[day] = sum(1 for _ in f.open(encoding="utf-8")) - 1
 
@@ -87,7 +105,9 @@ def base(chart: alt.Chart) -> alt.Chart:
 st.title("✈️ 김해공항 항공편 ETA 예측")
 st.caption("동아대학교 도전학기제 · 송하얼 · 박성준")
 
-metar, dataset, metrics = load_metar(), load_dataset(), load_metrics()
+metar = load_metar(stamp(METAR_PATH))
+dataset = load_dataset(stamp(DATASET_PATH))
+metrics = load_metrics(stamp(METRICS_PATH))
 
 if metar is None:
     st.warning(
@@ -104,7 +124,7 @@ tab_collect, tab_delay, tab_wx, tab_model = st.tabs(
 # ---------------------------------------------------------------- 수집 현황
 with tab_collect:
     st.subheader("항공편 수집")
-    days = load_collection_days()
+    days = load_collection_days(raw_stamp())
 
     if days.empty:
         st.info("아직 수집된 항공편이 없습니다. `python src/collect_flights.py`")
