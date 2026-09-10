@@ -23,13 +23,21 @@ python src/collect_metar.py --start-year 2019
 ## 항공편 — 공공데이터포털 키 필요
 
 ```bash
-python src/collect_flights.py                    # 어제치 (기본)
-python src/collect_flights.py --date 2026-09-08  # 누락일 복구
+python src/collect_flights.py                    # 복구 창 점검 + 누락분 자동 수집
+python src/collect_flights.py --date 2026-09-08  # 특정일 강제 재수집
 ```
+
+**인자 없이 실행하면 D-1 ~ D-3 을 스스로 점검한다.** 맥이 자고 있어 스케줄러가 며칠을
+걸렀어도 다음 실행에서 따라잡는다. 이미 받은 날은 건너뛰므로 몇 번을 돌려도 결과가 같다.
+복구 창을 넘겨 영구히 받을 수 없게 된 날짜가 생기면 `⚠ 복구 불가` 로 로그에 남는다.
+
+하루치가 '완결' 로 인정되려면 **본 파일과 출발지 파일이 둘 다** 있고 데이터가 한 줄 이상
+있어야 한다. 헤더만 있는 파일은 미완결로 보고 다시 받는다.
 
 - `.env`의 `DATA_GO_KR_KEY` 필요. Encoding/Decoding 키 아무거나 넣어도 된다
   (수집기가 `unquote` 로 정규화한다)
-- 저장 위치: `data/raw/flights_{YYYY-MM-DD}.csv` — **운항일 기준**, 재실행하면 덮어쓴다
+- 저장 위치: `data/raw/flights_{YYYY-MM-DD}.csv` — **운항일 기준**
+- 출발지연용: `data/raw/flights_origin_{YYYY-MM-DD}.csv` (GMP·CJU 출발 김해행)
 - 자동 실행: 매일 04:00 (`scripts/install_scheduler.sh` 로 등록)
 - 정상 수집 시 하루 약 400~430건(도착 ~200 + 출발 ~220)
 

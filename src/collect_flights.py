@@ -4,8 +4,12 @@ API 는 searchday 기준 D-3 ~ D+6 을 조회할 수 있다(D-4 부터는 0건).
 따라서 **다음날 한 번만 조회하면 확정된 실제도착시각**을 받을 수 있고,
 수집에 실패해도 3일 안에 다시 돌리면 복구된다.
 
-    python src/collect_flights.py                  # 어제치
-    python src/collect_flights.py --date 2026-09-08  # 누락일 복구 (D-3 까지)
+인자 없이 실행하면 **복구 창(D-1 ~ D-3) 전체를 점검**해 빠진 날을 스스로 채운다.
+맥이 자고 있어 스케줄러가 며칠 걸렀더라도 다음 실행에서 따라잡는다.
+이미 받은 날은 건너뛰므로 몇 번을 돌려도 결과가 같다.
+
+    python src/collect_flights.py                    # 복구 창 점검 + 누락분 수집
+    python src/collect_flights.py --date 2026-09-08  # 특정일 강제 재수집
 
 타겟 변수: delay_minutes = estimateddatetime - scheduledatetime
 """
@@ -114,16 +118,72 @@ def write_csv(rows: list[dict], out: Path) -> None:
         writer.writerows(rows)
 
 
+def is_collected(day: date) -> bool:
+    """하루치가 이미 받아져 있나. 출발지 파일까지 있어야 완결로 본다."""
+    return all(
+        has_rows(DATA_RAW / f"flights_{prefix}{day:%Y-%m-%d}.csv") for prefix in ("", "origin_")
+    )
+
+
+def has_rows(path: Path) -> bool:
+    """헤더 말고 실제 데이터가 한 줄이라도 있나."""
+    if not path.exists():
+        return False
+    with path.open(encoding="utf-8") as fp:
+        next(fp, None)  # 헤더
+        return next(fp, None) is not None
+
+
+def catch_up(key: str, today: date) -> None:
+    """복구 창(D-1 ~ D-3) 안에서 빠진 날을 채운다.
+
+    맥이 자고 있어 스케줄러가 며칠 걸렀어도 다음 실행에서 따라잡는다.
+    """
+    missing = [
+        day
+        for back in range(1, MAX_BACKFILL_DAYS + 1)
+        if not is_collected(day := today - timedelta(days=back))
+    ]
+
+    if not missing:
+        print(f"{today} 점검: 복구 창(D-1~D-{MAX_BACKFILL_DAYS}) 이상 없음")
+        return
+
+    print(f"{today} 점검: 누락 {len(missing)}일 — {', '.join(map(str, missing))}")
+    for day in sorted(missing):
+        collect(key, day)
+
+
+def report_gaps(today: date) -> None:
+    """복구 창을 넘겨 영구히 받을 수 없게 된 날짜를 알린다.
+
+    되돌릴 방법은 없지만, 모르고 지나가면 분석 단계에서야 발견하게 된다.
+    """
+    collected = sorted(
+        date.fromisoformat(f.stem.removeprefix("flights_"))
+        for f in DATA_RAW.glob("flights_????-??-??.csv")
+    )
+    if not collected:
+        return
+
+    deadline = today - timedelta(days=MAX_BACKFILL_DAYS)
+    lost = [
+        day
+        for n in range((deadline - collected[0]).days)
+        if not is_collected(day := collected[0] + timedelta(days=n))
+    ]
+    if lost:
+        print(f"⚠ 복구 불가 {len(lost)}일 (D-{MAX_BACKFILL_DAYS} 경과): {lost[0]} ~ {lost[-1]}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="김해공항 항공편 수집")
-    parser.add_argument("--date", help="조회일 YYYY-MM-DD (기본: 어제)")
+    parser.add_argument("--date", help="특정일 강제 재수집 YYYY-MM-DD (기본: 복구 창 점검)")
     args = parser.parse_args()
 
     today = datetime.now(KST).date()
-    day = date.fromisoformat(args.date) if args.date else today - timedelta(days=1)
-
-    if not 0 <= (today - day).days <= MAX_BACKFILL_DAYS:
-        sys.exit(f"{day} 는 조회 범위 밖이다. API 는 D-{MAX_BACKFILL_DAYS} ~ 오늘만 준다.")
+    if args.date and not 0 <= (today - date.fromisoformat(args.date)).days <= MAX_BACKFILL_DAYS:
+        sys.exit(f"{args.date} 는 조회 범위 밖이다. API 는 D-{MAX_BACKFILL_DAYS} ~ 오늘만 준다.")
 
     load_dotenv()
     key = os.getenv("DATA_GO_KR_KEY")
@@ -137,7 +197,13 @@ def main() -> None:
 
     # Encoding/Decoding 키 어느 쪽을 넣어도 되게 한다.
     # requests 가 params 를 다시 인코딩하므로 Encoding 키는 %2B → %252B 로 깨진다.
-    collect(unquote(key), day)
+    key = unquote(key)
+
+    if args.date:
+        collect(key, date.fromisoformat(args.date))
+    else:
+        catch_up(key, today)
+    report_gaps(today)
 
 
 if __name__ == "__main__":
