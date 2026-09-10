@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.eta.collect</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__ROOT__/venv/bin/python</string>
+        <string>__ROOT__/src/collect_flights.py</string>
+    </array>
+
+    <!-- .env 를 load_dotenv() 가 찾으려면 루트에서 실행해야 한다 -->
+    <key>WorkingDirectory</key>
+    <string>__ROOT__</string>
+
+    <!-- 매일 04:00 에 어제치를 조회한다.
+         전날 자료는 23:59 경 확정되므로 그 뒤라면 언제든 상관없다.
+         맥이 자고 있었으면 깨어난 직후에 launchd 가 한 번 따라잡아 실행한다. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__ROOT__/data/raw/collect.log</string>
+    <key>StandardErrorPath</key>
+    <string>__ROOT__/data/raw/collect.log</string>
+</dict>
+</plist>
