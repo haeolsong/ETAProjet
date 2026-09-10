@@ -8,6 +8,10 @@
 
 시계열이므로 랜덤 분할을 쓰지 않는다. 계획도착시각 기준으로 뒤쪽을 테스트셋으로 뗀다.
 
+MAE 만으로는 결론이 왜곡된다. 지연이 0 근처에 몰려 있어 상수 예측이 전체 MAE 를 낮게
+받지만, 정작 예측이 필요한 15분 이상 지연 구간에서는 전혀 못 맞힌다
+(notebooks/02_error_analysis.ipynb §3). 그래서 적중률·오경보율을 함께 기록한다.
+
     python src/train.py                    # 전체 표본 · 베이스라인 vs 사전예측
     python src/train.py --dep-delay-only   # 국내선 부분집합 · 이륙 후 모델까지 3종 비교
 """
@@ -26,6 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import DATA_PROCESSED  # noqa: E402
 
 TARGET = "delay_minutes"
+
+# '지연' 으로 볼 기준(분). 15분은 보고서의 목표 MAE 와 같은 눈금이다.
+DELAY_THRESHOLD = 15
 
 # 출발 전에 알 수 있는 정보만. dep_delay 는 여기 넣지 않는다.
 FEATURES_PRE = [
@@ -75,12 +82,21 @@ def split_by_time(df: pd.DataFrame, test_frac: float) -> tuple[pd.DataFrame, pd.
 
 
 def evaluate(name: str, y_true, y_pred) -> dict:
+    # 15분 이상 지연을 '잡아냈는가' 로 다시 본다. 분모가 0 이면(테스트셋에 지연편이
+    # 없거나 모델이 한 번도 경고하지 않으면) 비율이 정의되지 않으므로 NaN 으로 둔다.
+    actual = pd.Series(y_true).reset_index(drop=True) >= DELAY_THRESHOLD
+    flagged = pd.Series(y_pred).reset_index(drop=True) >= DELAY_THRESHOLD
+    hit = (actual & flagged).sum()
+
     return {
         "model": name,
         "n_test": len(y_true),
         "MAE": mean_absolute_error(y_true, y_pred),
         "RMSE": mean_squared_error(y_true, y_pred) ** 0.5,
         "R2": r2_score(y_true, y_pred),
+        "실제지연편수": int(actual.sum()),
+        "적중률": hit / actual.sum() if actual.any() else float("nan"),
+        "오경보율": 1 - hit / flagged.sum() if flagged.any() else float("nan"),
     }
 
 
@@ -140,16 +156,30 @@ def main() -> None:
         print("이륙 후 모델은 --dep-delay-only 로 같은 표본에서 비교한다.\n")
 
     table = pd.DataFrame(results)
-    print(table.to_string(index=False))
+    print(table.round(2).to_string(index=False))
 
     pre = table.loc[table.model == "XGBoost 사전예측", "MAE"].iloc[0]
     print(f"\n베이스라인 대비 MAE {table.MAE.iloc[0] - pre:+.2f}분")
 
+    n_delayed = table["실제지연편수"].iloc[0]
+    if n_delayed == 0:
+        print(f"테스트셋에 {DELAY_THRESHOLD}분 이상 지연편이 없어 적중률을 낼 수 없다.")
+    else:
+        print(f"{DELAY_THRESHOLD}분 이상 지연 {n_delayed}편 중 잡아낸 비율:")
+        for row in results:
+            rate = row["적중률"]
+            shown = f"{rate:.0%}" if pd.notna(rate) else "— (한 번도 경고하지 않음)"
+            print(f"  {row['model']:22s} {shown}")
+
     table.insert(0, "run_at", datetime.now().isoformat(timespec="seconds"))
     table.insert(1, "subset", subset)
     table.insert(2, "n_train", len(train))
+    # 지표를 추가하면 열 수가 달라져 header 없는 append 는 깨진다.
+    # 파일이 작으므로(연말까지 수백 행) 통째로 읽어 concat 한 뒤 다시 쓴다.
     out = DATA_PROCESSED / "metrics.csv"
-    table.to_csv(out, mode="a", header=not out.exists(), index=False)
+    if out.exists():
+        table = pd.concat([pd.read_csv(out), table], ignore_index=True)
+    table.to_csv(out, index=False)
     print(f"→ {out.name} 에 누적 기록")
 
 
