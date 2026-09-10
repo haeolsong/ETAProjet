@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 항공편 수집기를 launchd 에 10분 주기로 등록한다. 재실행해도 안전하다.
+# 항공편 수집기를 launchd 에 매일 04:00 실행으로 등록한다. 재실행해도 안전하다.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

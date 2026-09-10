@@ -126,6 +126,35 @@ def clean_flights(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("sched_time").reset_index(drop=True)
 
 
+def load_dep_delay() -> pd.DataFrame:
+    """출발지 공항 자료에서 편명·운항일별 출발지연을 만든다.
+
+    한국공항공사 API 는 국내선 출발지(GMP·CJU)만 조회할 수 있어
+    김해 도착편의 약 30% 에만 붙는다. 나머지는 NaN 으로 남는다.
+    """
+    files = sorted(DATA_RAW.glob("flights_origin_*.csv"))
+    if not files:
+        return pd.DataFrame(columns=["flight_no", "flight_date", "dep_delay"])
+
+    df = pd.concat((pd.read_csv(f, dtype=str) for f in files), ignore_index=True)
+
+    # 도착편과 동일한 정제 규칙을 적용한다.
+    keep = df["masterflightid"].isna() | (df["flightid"] == df["masterflightid"])
+    df = df[keep].drop_duplicates(subset="fid")
+    df = df[df["rmkKor"] == "출발"]
+
+    sched = pd.to_datetime(df["scheduledatetime"], format="%Y%m%d%H%M")
+    actual = pd.to_datetime(df["estimateddatetime"], format="%Y%m%d%H%M")
+
+    return pd.DataFrame(
+        {
+            "flight_no": df["flightid"],
+            "flight_date": sched.dt.date,
+            "dep_delay": (actual - sched).dt.total_seconds() / 60,
+        }
+    ).drop_duplicates(subset=["flight_no", "flight_date"])
+
+
 def merge(flights: pd.DataFrame, metar: pd.DataFrame) -> pd.DataFrame:
     """계획도착시각의 시(hour) 를 키로 기상 관측을 붙인다."""
     # hour·month 는 항공편 쪽에서 이미 만들었다. 기상 관측 쪽 것을 쓰면
@@ -156,6 +185,13 @@ def main() -> None:
     merged = merge(flights, df)
     matched = merged["temp_c"].notna().mean() * 100
     print(f"기상 매칭 {matched:.1f}%")
+
+    dep = load_dep_delay()
+    merged["flight_date"] = merged["sched_time"].dt.date
+    merged = merged.merge(dep, on=["flight_no", "flight_date"], how="left")
+    merged = merged.drop(columns="flight_date")
+    filled = merged["dep_delay"].notna().mean() * 100
+    print(f"출발지연 매칭 {filled:.1f}% (국내선 한정이라 30% 내외가 정상)")
 
     out = DATA_PROCESSED / "dataset.parquet"
     merged.to_parquet(out, index=False)

@@ -8,8 +8,8 @@
 
 시계열이므로 랜덤 분할을 쓰지 않는다. 계획도착시각 기준으로 뒤쪽을 테스트셋으로 뗀다.
 
-    python src/train.py
-    python src/train.py --test-frac 0.3
+    python src/train.py                    # 전체 표본 · 베이스라인 vs 사전예측
+    python src/train.py --dep-delay-only   # 국내선 부분집합 · 이륙 후 모델까지 3종 비교
 """
 
 import argparse
@@ -100,6 +100,11 @@ def run_xgb(name: str, features: list[str], train: pd.DataFrame, test: pd.DataFr
 def main() -> None:
     parser = argparse.ArgumentParser(description="ETA 예측 모델 학습·평가")
     parser.add_argument("--test-frac", type=float, default=0.2, help="테스트셋 비율 (기본 0.2)")
+    parser.add_argument(
+        "--dep-delay-only",
+        action="store_true",
+        help="출발지연이 있는 행만 남긴다. 세 모델을 같은 표본에서 비교할 때 쓴다.",
+    )
     args = parser.parse_args()
 
     path = DATA_PROCESSED / "dataset.parquet"
@@ -107,6 +112,16 @@ def main() -> None:
         sys.exit(f"{path} 가 없다. 먼저 실행: python src/preprocess.py")
 
     df = pd.read_parquet(path)
+
+    # 사전 예측은 전체 표본, 이륙 후는 출발지연이 있는 행에서만 학습된다.
+    # 표본이 다르면 두 MAE 의 차이가 '출발지연 정보의 가치'를 뜻하지 못하므로,
+    # 비교할 때는 같은 부분집합으로 좁힌다.
+    subset = "전체"
+    if args.dep_delay_only:
+        df = df[df["dep_delay"].notna()]
+        subset = "국내선(출발지연 보유)"
+        print(f"부분집합: {subset} {len(df):,}행\n")
+
     train, test = split_by_time(df, args.test_frac)
     print(f"학습 {len(train):,}행 (~{train['sched_time'].max():%Y-%m-%d %H:%M})")
     print(f"테스트 {len(test):,}행 ({test['sched_time'].min():%Y-%m-%d %H:%M}~)\n")
@@ -119,10 +134,10 @@ def main() -> None:
     results.append(run_xgb("XGBoost 사전예측", FEATURES_PRE, train, test))
 
     # 3. 이륙 후 — 출발지연을 아는 상태. 현재 수집 범위로는 만들 수 없다.
-    if "dep_delay" in df.columns:
+    if args.dep_delay_only:
         results.append(run_xgb("XGBoost 이륙후", [*FEATURES_PRE, "dep_delay"], train, test))
     else:
-        print("dep_delay 없음 — 이륙후 모델은 건너뛴다.\n")
+        print("이륙 후 모델은 --dep-delay-only 로 같은 표본에서 비교한다.\n")
 
     table = pd.DataFrame(results)
     print(table.to_string(index=False))
@@ -131,7 +146,8 @@ def main() -> None:
     print(f"\n베이스라인 대비 MAE {table.MAE.iloc[0] - pre:+.2f}분")
 
     table.insert(0, "run_at", datetime.now().isoformat(timespec="seconds"))
-    table.insert(1, "n_train", len(train))
+    table.insert(1, "subset", subset)
+    table.insert(2, "n_train", len(train))
     out = DATA_PROCESSED / "metrics.csv"
     table.to_csv(out, mode="a", header=not out.exists(), index=False)
     print(f"→ {out.name} 에 누적 기록")

@@ -31,8 +31,12 @@ BASE = "https://apis.data.go.kr/B551178/flight-status"
 ROWS = 100  # 문서에 없지만 100 초과 시 HTTP_ERROR 가 난다
 MAX_BACKFILL_DAYS = 3  # API 가 D-3 까지만 준다
 
+# 김해 도착편의 출발지연을 얻으려면 출발지 공항에서 따로 조회해야 한다.
+# 이 API 는 한국공항공사 소관이라 국내선 출발지만 가능하다(해외·인천 제외).
+ORIGINS = ("GMP", "CJU")
 
-def fetch(kind: str, key: str, searchday: str) -> list[dict]:
+
+def fetch(kind: str, key: str, searchday: str, airport: str = IATA) -> list[dict]:
     """arrival | depart 한 종류를 전체 페이지 조회한다."""
     items: list[dict] = []
     page = 1
@@ -44,7 +48,7 @@ def fetch(kind: str, key: str, searchday: str) -> list[dict]:
                 "pageNo": page,
                 "numOfRows": ROWS,
                 "searchday": searchday,
-                "airport_code": IATA,
+                "airport_code": airport,
                 "type": "json",
             },
             timeout=60,
@@ -84,16 +88,30 @@ def collect(key: str, day: date) -> None:
         print(f"{day} 수집된 항공편 없음 — D-3 을 넘겼거나 API 장애")
         return
 
-    # 확정된 하루치 전량이므로 덮어쓴다(재실행해도 결과가 같다).
+    write_csv(rows, DATA_RAW / f"flights_{day:%Y-%m-%d}.csv")
+    print(f"{day} {len(rows)}건 → flights_{day:%Y-%m-%d}.csv")
+
+    # 출발지 공항에서 김해행 편만 골라 따로 저장한다(출발지연 산출용).
+    origin_rows = []
+    for origin in ORIGINS:
+        for item in fetch("depart", key, searchday, airport=origin):
+            if item.get("arrvAirportCode") == IATA:
+                item["_collected_at"] = now
+                origin_rows.append(item)
+
+    if origin_rows:
+        write_csv(origin_rows, DATA_RAW / f"flights_origin_{day:%Y-%m-%d}.csv")
+        print(f"{day} 출발지 {len(origin_rows)}건 → flights_origin_{day:%Y-%m-%d}.csv")
+
+
+def write_csv(rows: list[dict], out: Path) -> None:
+    """확정된 하루치 전량이므로 덮어쓴다(재실행해도 결과가 같다)."""
     DATA_RAW.mkdir(parents=True, exist_ok=True)
-    out = DATA_RAW / f"flights_{day:%Y-%m-%d}.csv"
     fields = sorted({k for r in rows for k in r})
     with out.open("w", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
-
-    print(f"{day} {len(rows)}건 → {out.name}")
 
 
 def main() -> None:
