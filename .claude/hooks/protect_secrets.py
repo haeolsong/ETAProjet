@@ -20,7 +20,13 @@ BLOCKED_WRITE = [
 
 # Bash 명령에서 막을 패턴
 BLOCKED_BASH = [
-    (re.compile(r"git\s+add\b[^\n;|&]*(\.env|data/raw)"), "커밋 대상에 시크릿/원본 데이터가 포함됐다"),
+    (re.compile(r"git\s+add\b[^\n;|&]*\.env"), "커밋 대상에 .env 가 포함됐다"),
+    # 항공편 CSV 는 D-3 이 지나면 재취득이 불가능해 백업 목적으로 커밋한다(.gitignore 참조).
+    # 그 외 data/raw 원본(METAR·로그)은 재수집 가능하므로 계속 막는다.
+    (
+        re.compile(r"git\s+add\b[^\n;|&]*data/raw/(?!flights_)"),
+        "data/raw 의 원본 데이터가 커밋 대상에 포함됐다 (항공편 CSV 만 예외)",
+    ),
     (re.compile(r">>?\s*[^\s;|&]*\.env\b"), ".env 로의 리다이렉션 쓰기"),
     (re.compile(r">>?\s*[^\s;|&]*\.secrets\b"), ".secrets 로의 리다이렉션 쓰기"),
 ]

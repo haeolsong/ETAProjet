@@ -5,7 +5,11 @@ __pycache__/
 *.py[cod]
 
 # 데이터 (원본은 커밋하지 않음)
-data/raw/
+# (디렉터리째 제외하면 git 이 안으로 들어가지 않아 아래 예외가 먹지 않는다)
+data/raw/*
+# 단, 항공편은 D-3 이 지나면 API 가 주지 않아 재취득이 불가능하다. 백업 목적으로 포함한다.
+# (METAR 는 Iowa 아카이브에서 언제든 재수집되므로 계속 제외)
+!data/raw/flights_*.csv
 data/processed/*.parquet
 data/processed/*.csv
 
