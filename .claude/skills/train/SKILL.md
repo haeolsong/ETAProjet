@@ -5,13 +5,34 @@ description: 김해공항 ETA 예측 모델의 학습·평가 절차. 베이스�
 
 # 모델 학습·평가 절차
 
-> ⚠️ `src/train.py`는 아직 없다. 항공편 API 응답 스키마가 확정되어야
-> 피처와 타겟을 정의할 수 있기 때문이다(`/collect` 스킬의 `--probe` 참고).
-> 아래는 구현할 때 지켜야 할 규칙이다.
+> ⚠️ `src/train.py` 는 동작하지만, 데이터가 2026-09-09 부터 하루씩만 쌓인다.
+> 표본이 모이기 전의 성능 수치는 파이프라인 검증용이지 결과가 아니다.
+
+## 타겟 변수 (확정)
+
+```
+delay_minutes = estimateddatetime - scheduledatetime   # 분
+```
+
+`data/raw/flights_*.csv` 의 `io == "I"`(도착) 행이 대상이다.
+
+전처리는 `src/preprocess.py` 가 하고, `train.py` 는 `dataset.parquet` 을 읽기만 한다.
+전처리에서 거르는 것(직접 다시 구현하지 말 것):
+
+1. **코드쉐어 제거** — `masterflightid` 는 **코드쉐어 행에만** 채워진다.
+   `flightid == masterflightid` 만 남기면 단독편이 전부 날아간다.
+   조건은 **결측이거나 주편명**. 그 뒤 `fid` 중복 제거가 한 번 더 필요하다.
+2. **미확정편 제거** — `rmkKor == '도착'` 만 남긴다. 결항편은
+   `estimateddatetime == scheduledatetime` 이라 **지연 0분처럼 보이고**,
+   미도착편의 시각은 실적이 아니라 예정값이다.
+3. 실측 참고(2026-09-07~10 도착 518편): 평균 −5.2분, 중앙값 −9분, 표준편차 22.2분.
+   **조기도착이 흔하다** — 베이스라인 중앙값이 음수가 된다.
 
 ```bash
 source venv/bin/activate
-python src/train.py   # 구현 예정
+python src/preprocess.py
+python src/train.py                    # 테스트셋 뒤쪽 20%
+python src/train.py --test-frac 0.3
 ```
 
 ## 반드시 지킬 규칙
@@ -42,6 +63,11 @@ python src/train.py   # 구현 예정
 `dep_delay`(출발지연)는 도착지연의 압도적 1위 예측 변수다. 넣으면 MAE가 크게 떨어지지만
 "출발지연 보고 맞힌 것 아니냐"는 지적을 받는다. 그래서 **메인은 사전 예측**으로 두고
 이륙 후 모델은 비교용으로만 쓴다.
+
+> ⚠️ **`dep_delay` 는 아직 수집되지 않는다.** 김해 도착편의 출발지는 CJU·GMP·ICN·TPE…
+> 이고 수집기는 `airport_code=PUS` 하나만 조회한다. `train.py` 는 컬럼이 없으면
+> 이륙 후 모델을 건너뛴다. 국내선(CJU·GMP·ICN)은 같은 API로 출발지 쪽을 추가
+> 수집하면 확보 가능하다.
 
 ### 4. 결론 형태
 
