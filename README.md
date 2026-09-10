@@ -45,7 +45,7 @@ ETA/
 ├── src/
 │   ├── collect_metar.py    # METAR 수집 (Iowa State 아카이브)
 │   ├── collect_flights.py  # 항공편 수집 (공공데이터포털)
-│   ├── preprocess.py       # 병합 · 피처 생성
+│   ├── preprocess.py       # METAR 정리 · 항공편 정제 · 병합
 │   └── train.py            # 베이스라인 + XGBoost 학습/평가
 ├── dashboard/        # Streamlit 앱
 ├── scripts/          # 스케줄러 등록 스크립트
@@ -63,21 +63,50 @@ ETA/
 **Iowa State Mesonet ASOS 아카이브** — RKPK(김해) METAR
 - `https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py`
 - **API 키 불필요**, 1954-07-19 ~ 현재
-- 시간당 1건 / 기온 · 이슬점 · 풍향 · 풍속 · 돌풍 · 강수 · 시정 · 운량 · 운고 · 기상현상코드
+- 시간당 1건 / 기온 · 이슬점 · 풍향 · 풍속 · 돌풍 · 시정 · 운량 · 운고 · 기상현상코드
+- ⚠️ 강수량(`p01i`)은 RKPK 가 보고하지 않아 **항상 0** 이다. 비의 유무는 기상현상코드
+  (`wx_ra`)로만 알 수 있고 **강도는 알 수 없다.** → `notebooks/01_metar_eda.ipynb`
 
 > 기상청 API허브(apihub.kma.go.kr)도 METAR를 제공하나 키 발급이 필요하고 과거 조회 범위가
 > 제한적이어서, 동일 원천(ICAO METAR 전문)을 무료·장기간 제공하는 위 아카이브를 채택했다.
 
-### 항공편 (확보 진행 중)
+### 항공편 (확보 완료)
 
-**공공데이터포털** — 한국공항공사 항공기 운항정보 / 실시간 항공운항 현황 상세조회
+**공공데이터포털** — 한국공항공사_실시간 항공기 운항정보 조회_GW
+- 도착: `https://apis.data.go.kr/B551178/flight-status/arrival`
+- 출발: `https://apis.data.go.kr/B551178/flight-status/depart`
+- 인증키 필요 (`.env`의 `DATA_GO_KR_KEY`)
 
-⚠️ **국내 항공편의 편별 과거 이력은 공개 API로 대량 조회가 불가능하다.**
-- 한국공항공사 API: 실시간 전용
-- 인천국제공항공사 API: D-3 ~ D+6, 김해 미포함
-- 에어포탈 항공통계: 집계값(편수·여객수)이라 편별 실제도착시각 추출 불가
+**조회 범위는 D-3 ~ D+6.** 실시간 전용이 아니다. 다음날 한 번만 조회하면 확정된
+실제도착시각을 받을 수 있고, 수집에 실패해도 사흘 안에 복구된다.
+그래서 상시 폴링이 아니라 **매일 04:00 에 어제치 하루분을 조회**하는 방식을 쓴다.
+(D-4 부터는 응답이 0건이므로, 나흘을 놓치면 그 날짜는 영구히 복구 불가다.)
 
-따라서 **일일 수집기를 상시 가동해 이력을 직접 축적**한다. (`src/collect_flights.py`)
+주요 응답 필드:
+
+| 필드 | 예시 | 용도 |
+|------|------|------|
+| `scheduledatetime` | `202609090605` | 계획시각 |
+| `estimateddatetime` | `202609090623` | **실제/변경 시각** |
+| `rmkKor` | 도착 / 출발 / 지연 / 사전결항 | 상태 |
+| `depAirportCode` | `CXR` | 노선 |
+| `line` | 국내 / 국제 | 편 구분 |
+| `codeshare`·`masterflightid` | `Y` / `BX8813` | 코드쉐어 판별 |
+
+> API 제약: `numOfRows` 최대 100(문서에 없음, 초과 시 `HTTP_ERROR`).
+> 오류도 HTTP 200 으로 내려오므로 본문의 `OpenAPI_ServiceResponse` 유무로 판별해야 한다.
+
+**전처리에서 반드시 처리할 것** (2026-09-09 실측 기준):
+
+1. **코드쉐어 중복** — 도착 196편 중 89편이 코드쉐어이고 `fid`가 52건 겹친다.
+   동일 항공기가 여러 편명으로 중복 계상된다. 단, `masterflightid`는 **코드쉐어 행에만**
+   채워지므로(단독편 107건은 전부 결측) `flightid == masterflightid` 만으로 거르면
+   정상 항공편이 모두 날아간다. 조건은 **결측이거나 주편명인 행**이다.
+   정제 후에도 동일 `fid`가 그대로 두 번 내려오는 경우가 있어 `fid` 중복 제거가 더 필요하다.
+2. **미확정편 제외** — `rmkKor == '도착'` 인 행만 쓴다. `사전결항`은
+   `estimateddatetime`이 계획시각과 같아 **지연 0분으로 보이고**, 아직 도착하지 않은 편의
+   시각은 실적이 아니라 예정값이다(당일 조회분에서 다수 발생).
+3. **필드명 불일치** — 도착은 `arrAirportCode`, 출발은 `arrvAirportCode`다.
 
 **병합 기준:** 시간 단위 JOIN (항공편 계획시각의 시(hour) ↔ METAR 관측시각)
 
@@ -102,7 +131,16 @@ cp .env.example .env
 # 4. 기상 데이터 수집 (키 불필요, 즉시 실행 가능)
 python src/collect_metar.py --start-year 2019
 
-# 5. 대시보드 실행
+# 5. 항공편 수집 (어제치) · 자동화는 scripts/install_scheduler.sh
+python src/collect_flights.py
+
+# 6. 전처리 · 병합 (→ data/processed/dataset.parquet)
+python src/preprocess.py
+
+# 7. 학습·평가 (→ data/processed/metrics.csv)
+python src/train.py
+
+# 8. 대시보드 실행
 streamlit run dashboard/app.py
 ```
 
@@ -116,7 +154,10 @@ streamlit run dashboard/app.py
 |------|------|------|
 | 베이스라인 | 없음 (학습셋 중앙값 고정 예측) | **필수 기준선.** 지연은 0 근처에 몰려 있어 이 모델도 MAE 12~15분이 흔하다 |
 | XGBoost 사전 예측 | 기상 + 노선 + 시간대 | 메인 서사. 출발 전에 알 수 있는 정보만 사용 |
-| XGBoost 이륙 후 | 위 + 출발지연 | 성능 상한선 참고 |
+| XGBoost 이륙 후 | 위 + 출발지연 | 성능 상한선 참고 (※ `dep_delay` 미수집 — 아래) |
+
+> **미해결:** 김해 도착편의 출발지연은 출발지 공항(CJU·GMP·ICN…)에서 조회해야 하는데
+> 수집기는 `airport_code=PUS` 만 본다. 현재 이륙 후 모델은 자동으로 생략된다.
 
 **분할:** 시계열이므로 랜덤 분할 금지 — 시간 기준 분할
 **지표:** MAE(주지표) · RMSE · R²
@@ -134,5 +175,5 @@ streamlit run dashboard/app.py
 | 3 | Streamlit 대시보드 개발 | 11월 말 |
 | 4 | 재검증 · 오차 분석 · 최종 보고서 | 12월 12일 |
 
-> 항공편 이력을 오늘부터 축적하는 구조라 원안(9월 말 항공편 EDA 완료)은 물리적으로 불가능하다.
-> 1단계 범위를 기상 EDA + 파이프라인 가동으로 조정했다.
+> 항공편 이력은 2026-09-09 부터 축적한다(API 가 D-3 까지만 주므로 그 이전은 확보 불가).
+> 데이터가 하루씩만 쌓이므로 1단계 범위는 기상 EDA + 수집 파이프라인 가동까지다.

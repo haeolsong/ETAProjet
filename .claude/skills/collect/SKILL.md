@@ -23,32 +23,45 @@ python src/collect_metar.py --start-year 2019
 ## 항공편 — 공공데이터포털 키 필요
 
 ```bash
-python src/collect_flights.py            # 1회 수집
-python src/collect_flights.py --probe    # 응답 필드 확인용 (키 발급 직후 1번)
+python src/collect_flights.py                    # 어제치 (기본)
+python src/collect_flights.py --date 2026-09-08  # 누락일 복구
 ```
 
-- `.env`의 `DATA_GO_KR_KEY` 필요 (`.env.example` 참고)
-- 저장 위치: `data/raw/flights_{YYYY-MM-DD}.csv` — 같은 날 파일에 append
-- **하루 여러 번 찍어야** 계획시각 → 최종시각 변화를 포착할 수 있다
+- `.env`의 `DATA_GO_KR_KEY` 필요. Encoding/Decoding 키 아무거나 넣어도 된다
+  (수집기가 `unquote` 로 정규화한다)
+- 저장 위치: `data/raw/flights_{YYYY-MM-DD}.csv` — **운항일 기준**, 재실행하면 덮어쓴다
+- 자동 실행: 매일 04:00 (`scripts/install_scheduler.sh` 로 등록)
+- 정상 수집 시 하루 약 400~430건(도착 ~200 + 출발 ~220)
 
-### 왜 매일 쌓아야 하나
+### 조회 범위가 D-3 까지다
 
-국내 항공편의 편별 과거 이력은 공개 API로 대량 조회가 **불가능하다**.
-한국공항공사 API는 실시간 전용이고, 에어포탈 통계는 집계값뿐이다.
-따라서 이력은 직접 축적하는 수밖에 없다. **수집기가 멈추면 그 기간 데이터는 영구히 없다.**
+API 는 `searchday` 기준 **D-3 ~ D+6** 만 응답한다. D-4 부터는 0건이다.
+
+- 그래서 다음날 조회로 **확정된** 실제도착시각을 받는다. 상시 폴링은 필요 없다.
+- 하루이틀 빠져도 `--date` 로 복구된다. **단 나흘을 놓치면 영구 손실이다.**
+- 즉 "매일 돌아가는지"보다 **"3일 안에 알아채는지"** 가 중요하다.
+
+### 알아둘 API 제약
+
+- `numOfRows` 최대 **100** (문서에 없음, 초과 시 `HTTP_ERROR`)
+- **오류도 HTTP 200 으로 온다.** 본문에 `response` 대신 `OpenAPI_ServiceResponse` 가
+  오면 실패다 — `raise_for_status()` 로는 안 잡힌다
 
 ## 수집 상태 점검
 
 ```bash
-# 스케줄러 등록 확인
-launchctl list | grep eta-collect
+# 스케줄러 등록 확인 (두 번째 열이 마지막 종료코드 — 0 이어야 정상)
+launchctl list | grep eta
 
-# 최근 7일 수집 현황 (빠진 날짜 확인)
+# 수집기 로그
+tail -20 data/raw/collect.log
+
+# 최근 수집 현황 — 빠진 날짜가 3일 이내인지 확인 (그 이상이면 복구 불가)
 ls data/raw/flights_*.csv | tail -7
 
-# 오늘 수집된 건수
-wc -l data/raw/flights_$(date +%F).csv
+# 어제치 건수 (400건 내외가 정상)
+wc -l data/raw/flights_$(date -v-1d +%F).csv
 ```
 
-누락일을 발견하면 그 날짜는 복구할 수 없다. 원인(맥 절전·네트워크·키 한도 초과)을
-확인하고 재발을 막는 것이 우선이다.
+누락일이 **3일 이내면 `--date` 로 즉시 복구한다.** 그보다 오래됐으면 복구 불가이므로
+원인(맥 절전·네트워크·키 한도 초과)을 확인하고 재발을 막는 것으로 넘어간다.

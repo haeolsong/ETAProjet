@@ -1,9 +1,10 @@
-"""METAR 원본을 분석용 형태로 정리한다.
+"""METAR·항공편 원본을 분석용 형태로 정리하고 병합한다.
 
 Iowa State 아카이브는 미국 단위(°F, knot, mile, inch)로 내려주므로 미터법으로 바꾸고,
 결측 표기(M/T)를 정리한 뒤 시간 단위 인덱스를 만든다.
 
-항공편 데이터와의 병합은 API 응답 스키마가 확정된 뒤에 추가한다.
+항공편은 도착편만 골라 코드쉐어 중복을 제거하고 delay_minutes 를 계산한 뒤,
+계획도착시각의 시(hour) 를 키로 METAR 와 JOIN 한다.
 """
 
 import sys
@@ -76,6 +77,63 @@ def add_time_keys(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def load_flights() -> pd.DataFrame:
+    """일자별 CSV를 모두 읽어 김해 도착편만 남긴다."""
+    files = sorted(DATA_RAW.glob("flights_*.csv"))
+    if not files:
+        raise FileNotFoundError(
+            f"{DATA_RAW}에 항공편 파일이 없다. 먼저 실행: python src/collect_flights.py"
+        )
+
+    df = pd.concat((pd.read_csv(f, dtype=str) for f in files), ignore_index=True)
+    return df[df["io"] == "I"].reset_index(drop=True)
+
+
+def clean_flights(df: pd.DataFrame) -> pd.DataFrame:
+    """코드쉐어·미확정편을 걸러내고 지연시간을 계산한다."""
+    # 코드쉐어는 한 대의 항공기가 여러 편명으로 중복 계상된다.
+    # masterflightid 는 코드쉐어 행에만 채워지므로, 단독편(결측)과
+    # 코드쉐어의 주편명(flightid == masterflightid)만 남긴다.
+    keep = df["masterflightid"].isna() | (df["flightid"] == df["masterflightid"])
+    df = df[keep]
+
+    # 같은 fid 가 그대로 두 번 내려오는 경우가 있다.
+    df = df.drop_duplicates(subset="fid")
+
+    # 도착이 확정된 편만 쓴다. 결항편은 estimateddatetime 이 계획시각과 같아
+    # 지연 0분으로 보이고, 미도착편의 시각은 실적이 아니라 예정값이다.
+    df = df[df["rmkKor"] == "도착"]
+
+    sched = pd.to_datetime(df["scheduledatetime"], format="%Y%m%d%H%M")
+    actual = pd.to_datetime(df["estimateddatetime"], format="%Y%m%d%H%M")
+
+    out = pd.DataFrame(
+        {
+            "sched_time": sched,
+            "actual_time": actual,
+            "delay_minutes": (actual - sched).dt.total_seconds() / 60,
+            "airline": df["airline"],
+            "flight_no": df["flightid"],
+            "origin": df["depAirportCode"],
+            "line": df["line"],
+        }
+    )
+
+    out["hour_key"] = out["sched_time"].dt.floor("h")
+    out["dow"] = out["sched_time"].dt.dayofweek
+    out["hour"] = out["sched_time"].dt.hour
+    out["month"] = out["sched_time"].dt.month
+    return out.sort_values("sched_time").reset_index(drop=True)
+
+
+def merge(flights: pd.DataFrame, metar: pd.DataFrame) -> pd.DataFrame:
+    """계획도착시각의 시(hour) 를 키로 기상 관측을 붙인다."""
+    # hour·month 는 항공편 쪽에서 이미 만들었다. 기상 관측 쪽 것을 쓰면
+    # 매칭 실패한 행에서 NaN 이 된다.
+    weather = metar.drop(columns=["obs_time", "hour", "month"])
+    return flights.merge(weather, on="hour_key", how="left")
+
+
 def main() -> None:
     raw = load_metar()
     print(f"원본 {len(raw):,}행 ({raw['valid'].min()} ~ {raw['valid'].max()})")
@@ -90,7 +148,19 @@ def main() -> None:
     df.to_parquet(out, index=False)
 
     print(f"정리 후 {len(df):,}행 → {out.name}")
-    print(f"\n결측률 상위:\n{(df.isna().mean() * 100).sort_values(ascending=False).head(8)}")
+
+    raw_f = load_flights()
+    flights = clean_flights(raw_f)
+    print(f"\n항공편 도착 {len(raw_f):,}행 → 정제 {len(flights):,}행")
+
+    merged = merge(flights, df)
+    matched = merged["temp_c"].notna().mean() * 100
+    print(f"기상 매칭 {matched:.1f}%")
+
+    out = DATA_PROCESSED / "dataset.parquet"
+    merged.to_parquet(out, index=False)
+    print(f"병합 {len(merged):,}행 → {out.name}")
+    print(f"\ndelay_minutes:\n{merged['delay_minutes'].describe()}")
 
 
 if __name__ == "__main__":
