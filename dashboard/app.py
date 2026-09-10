@@ -109,7 +109,8 @@ def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -
         .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
         .encode(
             x=alt.X(f"{field}:Q", title=title, axis=alt.Axis(format=fmt)),
-            y=alt.Y("model:N", sort=sort, title=None),
+            # 2열로 좁아지면 기본 폭(180px)에서 "베이스라인(중앙값 -6분)" 이 잘린다.
+            y=alt.Y("model:N", sort=sort, title=None, axis=alt.Axis(labelLimit=250)),
             color=alt.Color("model:N", scale=alt.Scale(range=SERIES), legend=None),
             tooltip=[
                 "model:N",
