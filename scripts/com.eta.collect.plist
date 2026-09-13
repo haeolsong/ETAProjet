@@ -5,10 +5,13 @@
     <key>Label</key>
     <string>com.eta.collect</string>
 
+    <!-- 항공편 → 기상 순으로 실행한다. 항공편이 실패해도 기상은 받고,
+         종료코드는 둘 중 하나라도 실패하면 1 이다. -->
     <key>ProgramArguments</key>
     <array>
-        <string>__ROOT__/venv/bin/python</string>
-        <string>__ROOT__/src/collect_flights.py</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>__ROOT__/venv/bin/python __ROOT__/src/collect_flights.py; s=$?; __ROOT__/venv/bin/python __ROOT__/src/collect_metar.py || s=1; exit $s</string>
     </array>
 
     <!-- .env 를 load_dotenv() 가 찾으려면 루트에서 실행해야 한다 -->

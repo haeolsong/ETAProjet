@@ -42,6 +42,9 @@ bash scripts/install_scheduler.sh    # 반드시 04:00 으로 원복
 **exit 0 이면 `.env` 로딩까지 통과한 것이다** — `collect_flights.py` 는 키가 없으면
 `sys.exit`(코드 1)로 끝나기 때문이다. 2026-09-10 에 이 방법으로 검증했다.
 
+2026-09-13 부터 같은 작업에서 `collect_metar.py` 도 이어서 돈다(`/bin/sh -c`).
+종료코드는 둘 중 하나라도 실패하면 1 이므로, exit 1 이면 로그에서 어느 쪽인지 확인한다.
+
 ## 맥이 꺼져 있으면
 
 launchd 는 놓친 `StartCalendarInterval` 을 깨어난 뒤 따라잡아 실행한다.
