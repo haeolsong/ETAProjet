@@ -73,7 +73,10 @@ def main() -> None:
         out = DATA_RAW / f"metar_{args.station}_{year}.csv"
 
         # 지난 연도 파일은 더 늘어나지 않으므로 건너뛴다. 올해 파일은 항상 갱신.
-        if out.exists() and not args.force and year < date.today().year:
+        # 단 해가 끝나기 전에 받은 파일은 연말분이 빠져 있으므로, 이듬해 1월 2일 이후에
+        # 받은 파일만 완결로 본다 (1월 1~2일 실행분이 전년도를 다시 받는다).
+        finished = out.exists() and date.fromtimestamp(out.stat().st_mtime) >= date(year + 1, 1, 2)
+        if finished and not args.force and year < date.today().year:
             print(f"[건너뜀] {year} — 이미 있음 ({out.name})")
             continue
 
