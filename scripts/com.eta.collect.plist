@@ -6,10 +6,11 @@
     <string>com.eta.collect</string>
 
     <!-- 항공편 → 기상 순으로 실행한다. 항공편이 실패해도 기상은 받고,
-         종료코드는 둘 중 하나라도 실패하면 1 이다. -->
+         종료코드는 둘 중 하나라도 실패하면 1 이다.
+         /bin/sh 는 ~/Desktop 경로를 못 읽어 매번 getcwd 경고를 남기므로 zsh 를 쓴다. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/sh</string>
+        <string>/bin/zsh</string>
         <string>-c</string>
         <string>__ROOT__/venv/bin/python __ROOT__/src/collect_flights.py; s=$?; __ROOT__/venv/bin/python __ROOT__/src/collect_metar.py || s=1; exit $s</string>
     </array>
