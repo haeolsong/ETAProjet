@@ -104,11 +104,23 @@ def base(chart: alt.Chart) -> alt.Chart:
 
 def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -> alt.Chart:
     """모델별 가로 막대. 값이 작을수록 좋은 지표는 sort='x', 클수록 좋으면 '-x'."""
+    # 값 라벨을 막대 오른쪽 바깥에 찍으므로, 축 상한이 최댓값에 딱 맞으면 라벨이
+    # 차트 밖으로 밀려 잘린다(11.39 가 "11.3" 으로 보였다). 상한에 15% 여유를 준다.
+    hi = data[field].max()
+    x_scale = alt.Scale(domain=[0, hi * 1.15]) if pd.notna(hi) and hi > 0 else alt.Undefined
+
     chart = (
         alt.Chart(data)
         .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
         .encode(
-            x=alt.X(f"{field}:Q", title=title, axis=alt.Axis(format=fmt)),
+            # 막대마다 값을 직접 찍으므로 세로 격자선은 정보를 더하지 않는다. 오히려 값
+            # 라벨과 겹쳐("75%" 의 % 를 80% 선이 관통) 지저분해지므로 이 차트만 끈다.
+            x=alt.X(
+                f"{field}:Q",
+                title=title,
+                axis=alt.Axis(format=fmt, grid=False),
+                scale=x_scale,
+            ),
             # 2열로 좁아지면 기본 폭(180px)에서 "베이스라인(중앙값 -6분)" 이 잘린다.
             y=alt.Y("model:N", sort=sort, title=None, axis=alt.Axis(labelLimit=250)),
             color=alt.Color("model:N", scale=alt.Scale(range=SERIES), legend=None),
@@ -340,8 +352,10 @@ with tab_wx:
 
     st.subheader("악기상 발생률")
     st.caption(
-        "수집 예정 구간(9~12월)에는 뇌전·안개·눈이 거의 나오지 않습니다. "
-        "기상 변수의 설명력이 낮게 나와도 모델의 실패가 아니라 표본의 한계입니다."
+        "수집 구간(9/16~12/12)에 **눈·착빙은 확보할 수 없습니다** — 과거 7년 같은 기간에 "
+        "눈은 통틀어 1시간뿐입니다. 반면 비(88일 중 18.3일)·안개와 박무(11.1일)·"
+        "저시정(시정 8km 미만 20.7일)은 충분히 나옵니다. 다만 80%가 9월 하순~11월에 "
+        "몰려 있어 12월 초는 거의 비어 있습니다. → `notebooks/03_climate_feasibility.ipynb`"
     )
     names = {
         "wx_ts": "뇌전",
@@ -412,12 +426,31 @@ with tab_model:
             else:
                 st.info("이 기록에는 적중률이 없습니다. `python src/train.py` 를 다시 실행하세요.")
 
-        st.info(
-            "**두 지표의 순위가 다르면 MAE 쪽을 의심하세요.** 지연은 0 근처에 몰려 있어 "
-            "상수 예측(베이스라인)이 전체 MAE 를 낮게 받지만, 정작 예측이 필요한 15분 이상 "
-            "지연은 구조적으로 한 건도 잡지 못해 적중률이 0% 입니다. "
-            "적중률만 봐도 안 됩니다 — 막대에 커서를 올리면 오경보율이 같이 나옵니다."
-        )
+        # 표본에 따라 순위가 뒤집힌다. 전체에서는 사전예측이 MAE 도 이기지만 국내선
+        # 부분집합에서는 아직 베이스라인이 낮다. 문구를 고정하면 화면과 어긋나므로
+        # 선택된 표본의 실제 수치를 보고 고른다.
+        # 비교 대상은 메인인 사전예측이다. 이륙후는 출발지연을 쓰는 상한선 참고용이라
+        # 최저 MAE 로 고르면 국내선 표본에서 이륙후(4.84)가 뽑혀 문구가 뒤집힌다.
+        baseline = latest[latest.model.str.startswith("베이스라인")]
+        pre = latest[latest.model.str.contains("사전예측")]
+        base_mae = baseline.MAE.iloc[0] if len(baseline) else float("nan")
+        pre_mae = pre.MAE.iloc[0] if len(pre) else float("nan")
+
+        if not (pre_mae < base_mae):
+            st.info(
+                f"**이 표본에서는 MAE 순위를 믿지 마세요.** 지연이 0 근처에 몰려 있어 "
+                f"상수 예측인 베이스라인이 MAE {base_mae:.2f}분으로 가장 낮지만, 정작 예측이 "
+                f"필요한 15분 이상 지연은 구조적으로 한 건도 잡지 못해 적중률이 0% 입니다. "
+                f"적중률만 봐도 안 됩니다 — 막대에 커서를 올리면 오경보율이 같이 나옵니다."
+            )
+        else:
+            st.info(
+                f"**사전예측이 MAE {pre_mae:.2f}분으로 베이스라인"
+                f"({base_mae:.2f}분)을 앞섭니다.** 베이스라인은 상수 예측이라 MAE 를 낮게 "
+                f"받으면서도 15분 이상 지연은 한 건도 잡지 못해 적중률이 0% 입니다 — "
+                f"두 지표를 함께 봐야 하는 이유입니다. "
+                f"적중률만 봐도 안 됩니다 — 막대에 커서를 올리면 오경보율이 같이 나옵니다."
+            )
 
         st.warning(
             "표본이 다르면 MAE 를 직접 빼지 마세요. 사전 예측은 전체, 이륙 후는 국내선에서만 "
