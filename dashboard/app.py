@@ -20,11 +20,26 @@ from config import DATA_PROCESSED, DATA_RAW, ICAO  # noqa: E402
 
 # 검증된 기본 팔레트 (dataviz 지침). 범주형은 고정 순서로만 쓴다.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]
+# 모델명에는 중앙값이 박혀 있어(베이스라인(중앙값 -9분)) 표본마다 문자열이 달라진다.
+# 색을 model 에 직접 걸면 domain 이 차트마다 새로 잡혀 같은 모델이 다른 색을 받는다
+# (모델 비교에서 초록이던 베이스라인이 성능 추이에서 주황이었다). 계열명에 고정한다.
+# 메인 서사인 사전예측이 첫 색(파랑)을 갖는다. 베이스라인은 기준선일 뿐이다.
+SERIES_ORDER = ["사전예측", "베이스라인", "이륙후"]
+
+
+def series_of(model: str) -> str:
+    """모델명에서 색을 고정할 계열명을 뽑는다."""
+    for key in SERIES_ORDER:
+        if key in model:
+            return key
+    return model
 DIVERGING = ["#2a78d6", "#f0efec", "#e34948"]  # 조기 ← 정시 → 지연
 # 상태색은 예약된 슬롯이라 계열색과 섞지 않는다. 색만으로 뜻을 전하지 않도록
 # 범례 라벨과 본문 메시지를 항상 함께 둔다.
 STATUS_GOOD, STATUS_WARNING, STATUS_CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
-GRID = "#e6e5e1"
+# 축·격자. 밝은 회색을 그대로 쓰면 어두운 테마에서 모눈종이처럼 도드라진다.
+# 중간 회색을 낮은 불투명도로 깔아 양쪽 테마에서 모두 뒤로 물린다.
+AXIS = "#8a8a87"
 # 값 라벨용 중간 회색. 대시보드는 라이트·다크 양쪽에서 열리는데 Streamlit 1.41 은
 # 브라우저 테마를 서버에서 알 수 없어(st.context.theme 는 1.44+) 한쪽에 맞추면
 # 다른 쪽이 묻힌다(#52514e 는 다크에서 2.38:1). 양쪽 모두 4:1 을 넘는 값을 쓴다.
@@ -102,7 +117,14 @@ def load_collection_days(key: tuple) -> pd.DataFrame:
 def base(chart: alt.Chart) -> alt.Chart:
     """눈금을 뒤로 물리고 테두리를 없앤다."""
     return chart.configure_axis(
-        grid=True, gridColor=GRID, gridWidth=1, domainColor=GRID, tickColor=GRID
+        grid=True,
+        gridColor=AXIS,
+        gridOpacity=0.22,
+        gridWidth=1,
+        domainColor=AXIS,
+        domainOpacity=0.45,
+        tickColor=AXIS,
+        tickOpacity=0.45,
     ).configure_view(strokeWidth=0)
 
 
@@ -117,6 +139,7 @@ def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -
     if pd.notna(hi) and hi > 0:
         x_scale = alt.Scale(domain=[0, hi * (1 + 0.06 * len(format(hi, fmt)))])
 
+    data = data.assign(계열=data.model.map(series_of))
     chart = (
         alt.Chart(data)
         .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
@@ -131,7 +154,9 @@ def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -
             ),
             # 2열로 좁아지면 기본 폭(180px)에서 "베이스라인(중앙값 -6분)" 이 잘린다.
             y=alt.Y("model:N", sort=sort, title=None, axis=alt.Axis(labelLimit=250)),
-            color=alt.Color("model:N", scale=alt.Scale(range=SERIES), legend=None),
+            color=alt.Color(
+                "계열:N", scale=alt.Scale(domain=SERIES_ORDER, range=SERIES), legend=None
+            ),
             tooltip=[
                 "model:N",
                 alt.Tooltip("MAE:Q", format=".2f"),
@@ -471,12 +496,20 @@ with tab_model:
         st.caption("표본이 늘면서 베이스라인 대비 개선폭이 커지는지가 핵심입니다.")
         st.altair_chart(
             base(
-                alt.Chart(metrics[metrics.subset == subset])
+                alt.Chart(
+                    metrics[metrics.subset == subset].assign(
+                        계열=lambda f: f.model.map(series_of)
+                    )
+                )
                 .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=50))
                 .encode(
                     x=alt.X("n_train:Q", title="학습 표본 수"),
                     y=alt.Y("MAE:Q", title="MAE (분)"),
-                    color=alt.Color("model:N", scale=alt.Scale(range=SERIES), title=None),
+                    color=alt.Color(
+                        "계열:N",
+                        scale=alt.Scale(domain=SERIES_ORDER, range=SERIES),
+                        title=None,
+                    ),
                     tooltip=["model:N", "n_train:Q", alt.Tooltip("MAE:Q", format=".2f")],
                 )
                 .properties(height=260)
