@@ -33,6 +33,14 @@ def series_of(model: str) -> str:
         if key in model:
             return key
     return model
+
+
+def series_scale(present: pd.Series) -> alt.Scale:
+    """계열별 색을 고정한다. domain 을 SERIES_ORDER 로 박으면 색은 고정되지만
+    데이터에 없는 계열까지 범례에 뜬다(전체 표본에는 이륙후가 없는데 초록 점이
+    떴다). 있는 계열만, 순서는 고정해서 담는다."""
+    order = [k for k in SERIES_ORDER if k in set(present)]
+    return alt.Scale(domain=order, range=[SERIES[SERIES_ORDER.index(k)] for k in order])
 DIVERGING = ["#2a78d6", "#f0efec", "#e34948"]  # 조기 ← 정시 → 지연
 # 상태색은 예약된 슬롯이라 계열색과 섞지 않는다. 색만으로 뜻을 전하지 않도록
 # 범례 라벨과 본문 메시지를 항상 함께 둔다.
@@ -154,9 +162,7 @@ def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -
             ),
             # 2열로 좁아지면 기본 폭(180px)에서 "베이스라인(중앙값 -6분)" 이 잘린다.
             y=alt.Y("model:N", sort=sort, title=None, axis=alt.Axis(labelLimit=250)),
-            color=alt.Color(
-                "계열:N", scale=alt.Scale(domain=SERIES_ORDER, range=SERIES), legend=None
-            ),
+            color=alt.Color("계열:N", scale=series_scale(data.계열), legend=None),
             tooltip=[
                 "model:N",
                 alt.Tooltip("MAE:Q", format=".2f"),
@@ -494,22 +500,15 @@ with tab_model:
 
         st.subheader("성능 추이")
         st.caption("표본이 늘면서 베이스라인 대비 개선폭이 커지는지가 핵심입니다.")
+        trend = metrics[metrics.subset == subset].assign(계열=lambda f: f.model.map(series_of))
         st.altair_chart(
             base(
-                alt.Chart(
-                    metrics[metrics.subset == subset].assign(
-                        계열=lambda f: f.model.map(series_of)
-                    )
-                )
+                alt.Chart(trend)
                 .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=50))
                 .encode(
                     x=alt.X("n_train:Q", title="학습 표본 수"),
                     y=alt.Y("MAE:Q", title="MAE (분)"),
-                    color=alt.Color(
-                        "계열:N",
-                        scale=alt.Scale(domain=SERIES_ORDER, range=SERIES),
-                        title=None,
-                    ),
+                    color=alt.Color("계열:N", scale=series_scale(trend.계열), title=None),
                     tooltip=["model:N", "n_train:Q", alt.Tooltip("MAE:Q", format=".2f")],
                 )
                 .properties(height=260)
