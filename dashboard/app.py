@@ -25,6 +25,10 @@ DIVERGING = ["#2a78d6", "#f0efec", "#e34948"]  # 조기 ← 정시 → 지연
 # 범례 라벨과 본문 메시지를 항상 함께 둔다.
 STATUS_GOOD, STATUS_WARNING, STATUS_CRITICAL = "#0ca30c", "#fab219", "#d03b3b"
 GRID = "#e6e5e1"
+# 값 라벨용 중간 회색. 대시보드는 라이트·다크 양쪽에서 열리는데 Streamlit 1.41 은
+# 브라우저 테마를 서버에서 알 수 없어(st.context.theme 는 1.44+) 한쪽에 맞추면
+# 다른 쪽이 묻힌다(#52514e 는 다크에서 2.38:1). 양쪽 모두 4:1 을 넘는 값을 쓴다.
+LABEL = "#7b7b79"
 
 MAX_BACKFILL_DAYS = 3
 
@@ -105,9 +109,13 @@ def base(chart: alt.Chart) -> alt.Chart:
 def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -> alt.Chart:
     """모델별 가로 막대. 값이 작을수록 좋은 지표는 sort='x', 클수록 좋으면 '-x'."""
     # 값 라벨을 막대 오른쪽 바깥에 찍으므로, 축 상한이 최댓값에 딱 맞으면 라벨이
-    # 차트 밖으로 밀려 잘린다(11.39 가 "11.3" 으로 보였다). 상한에 15% 여유를 준다.
+    # 차트 밖으로 밀려 잘린다. 여유를 15% 고정으로 뒀더니 다시 잘렸다("11.76" 이
+    # "11.7" 로 보였다) - 잘림은 값의 크기가 아니라 라벨의 글자 수에서 온다.
+    # 최댓값 라벨이 4자(9.71)일 때 우연히 맞았을 뿐이다. 글자당 6% 로 잡는다.
     hi = data[field].max()
-    x_scale = alt.Scale(domain=[0, hi * 1.15]) if pd.notna(hi) and hi > 0 else alt.Undefined
+    x_scale = alt.Undefined
+    if pd.notna(hi) and hi > 0:
+        x_scale = alt.Scale(domain=[0, hi * (1 + 0.06 * len(format(hi, fmt)))])
 
     chart = (
         alt.Chart(data)
@@ -135,8 +143,10 @@ def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -
         )
     )
     # aqua 슬롯이 밝은 배경에서 대비 3:1 미만이라 값을 직접 표기한다.
-    labels = chart.mark_text(align="left", dx=6, color="#52514e").encode(
-        text=alt.Text(f"{field}:Q", format=fmt)
+    # color 를 mark 속성으로만 주면 막대에서 상속된 color 인코딩이 덮어써서 라벨이
+    # 계열색으로 찍힌다(초록은 밝은 배경에서 2.82:1). 인코딩으로 덮어야 한다.
+    labels = chart.mark_text(align="left", dx=6).encode(
+        text=alt.Text(f"{field}:Q", format=fmt), color=alt.value(LABEL)
     )
     return base(alt.layer(chart, labels).properties(height=170))
 
