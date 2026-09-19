@@ -500,7 +500,16 @@ with tab_model:
 
         st.subheader("성능 추이")
         st.caption("표본이 늘면서 베이스라인 대비 개선폭이 커지는지가 핵심입니다.")
-        trend = metrics[metrics.subset == subset].assign(계열=lambda f: f.model.map(series_of))
+        # 같은 표본 크기로 여러 번 돌린 기록이 있다(n_train=123 에 5회). 그대로 그리면
+        # 한 x 에 점이 여러 개 찍혀 선이 수직으로 꺾이고, 같은 표본에서의 실행 편차가
+        # 표본이 늘어 생긴 변화처럼 읽힌다. 표본 크기별로 최신 실행만 남긴다.
+        # (전체 기록은 아래 expander 에 그대로 있다.)
+        trend = (
+            metrics[metrics.subset == subset]
+            .sort_values("run_at")
+            .drop_duplicates(subset=["model", "n_train"], keep="last")
+            .assign(계열=lambda f: f.model.map(series_of))
+        )
         st.altair_chart(
             base(
                 alt.Chart(trend)
