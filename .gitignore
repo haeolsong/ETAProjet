@@ -12,6 +12,8 @@ data/raw/*
 !data/raw/flights_*.csv
 data/processed/*.parquet
 data/processed/*.csv
+# 단, 실험 기록은 누적 이력이라 다시 만들 수 없다. 포함한다.
+!data/processed/metrics.csv
 
 # 노트북
 .ipynb_checkpoints/
