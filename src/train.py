@@ -177,9 +177,11 @@ def main() -> None:
     table.insert(2, "n_train", len(train))
     # 지표를 추가하면 열 수가 달라져 header 없는 append 는 깨진다.
     # 파일이 작으므로(연말까지 수백 행) 통째로 읽어 concat 한 뒤 다시 쓴다.
+    # 기존 행은 dtype=str 로 읽는다 — float 로 되읽으면 다시 쓸 때 끝자리가
+    # 잘려 과거 기록이 매 실행마다 바뀐다.
     out = DATA_PROCESSED / "metrics.csv"
     if out.exists():
-        table = pd.concat([pd.read_csv(out), table], ignore_index=True)
+        table = pd.concat([pd.read_csv(out, dtype=str), table], ignore_index=True)
     table.to_csv(out, index=False)
     print(f"→ {out.name} 에 누적 기록")
 
