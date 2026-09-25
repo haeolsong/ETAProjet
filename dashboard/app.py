@@ -41,6 +41,8 @@ def series_scale(present: pd.Series) -> alt.Scale:
     떴다). 있는 계열만, 순서는 고정해서 담는다."""
     order = [k for k in SERIES_ORDER if k in set(present)]
     return alt.Scale(domain=order, range=[SERIES[SERIES_ORDER.index(k)] for k in order])
+
+
 DIVERGING = ["#2a78d6", "#f0efec", "#e34948"]  # 조기 ← 정시 → 지연
 # 상태색은 예약된 슬롯이라 계열색과 섞지 않는다. 색만으로 뜻을 전하지 않도록
 # 범례 라벨과 본문 메시지를 항상 함께 둔다.
@@ -136,8 +138,13 @@ def base(chart: alt.Chart) -> alt.Chart:
     ).configure_view(strokeWidth=0)
 
 
-def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -> alt.Chart:
-    """모델별 가로 막대. 값이 작을수록 좋은 지표는 sort='x', 클수록 좋으면 '-x'."""
+def model_bar(
+    data: pd.DataFrame, field: str, title: str, fmt: str, sort: str, label_col: str | None = None
+) -> alt.Chart:
+    """모델별 가로 막대. 값이 작을수록 좋은 지표는 sort='x', 클수록 좋으면 '-x'.
+
+    label_col 을 주면 값 대신 그 열의 문자열을 막대 라벨로 찍는다(비율에 분수를 덧붙일 때).
+    """
     # 값 라벨을 막대 오른쪽 바깥에 찍으므로, 축 상한이 최댓값에 딱 맞으면 라벨이
     # 차트 밖으로 밀려 잘린다. 여유를 15% 고정으로 뒀더니 다시 잘렸다("11.76" 이
     # "11.7" 로 보였다) - 잘림은 값의 크기가 아니라 라벨의 글자 수에서 온다.
@@ -145,7 +152,8 @@ def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -
     hi = data[field].max()
     x_scale = alt.Undefined
     if pd.notna(hi) and hi > 0:
-        x_scale = alt.Scale(domain=[0, hi * (1 + 0.06 * len(format(hi, fmt)))])
+        chars = data[label_col].str.len().max() if label_col else len(format(hi, fmt))
+        x_scale = alt.Scale(domain=[0, hi * (1 + 0.06 * chars)])
 
     data = data.assign(계열=data.model.map(series_of))
     chart = (
@@ -176,9 +184,8 @@ def model_bar(data: pd.DataFrame, field: str, title: str, fmt: str, sort: str) -
     # aqua 슬롯이 밝은 배경에서 대비 3:1 미만이라 값을 직접 표기한다.
     # color 를 mark 속성으로만 주면 막대에서 상속된 color 인코딩이 덮어써서 라벨이
     # 계열색으로 찍힌다(초록은 밝은 배경에서 2.82:1). 인코딩으로 덮어야 한다.
-    labels = chart.mark_text(align="left", dx=6).encode(
-        text=alt.Text(f"{field}:Q", format=fmt), color=alt.value(LABEL)
-    )
+    text = alt.Text(f"{label_col}:N") if label_col else alt.Text(f"{field}:Q", format=fmt)
+    labels = chart.mark_text(align="left", dx=6).encode(text=text, color=alt.value(LABEL))
     return base(alt.layer(chart, labels).properties(height=170))
 
 
@@ -457,9 +464,23 @@ with tab_model:
         with right:
             if latest["적중률"].notna().any():
                 n_delayed = int(latest["실제지연편수"].iloc[0])
+                # 표본이 작아 8편 중 5편이 "63%" 로 보인다. 분수를 같이 찍어 분모를 드러낸다.
+                # 퍼센트는 축·툴팁(d3) 과 맞추려고 반올림을 올림쪽으로 맞춘다 — 파이썬 기본
+                # 서식은 0.625 를 62% 로 내려 같은 화면에서 두 값이 어긋난다.
+                hits = latest.assign(
+                    적중_라벨=[
+                        f"{int(r * 100 + 0.5)}% ({n_delayed}편 중 {int(r * n_delayed + 0.5)}편)"
+                        for r in latest["적중률"]
+                    ]
+                )
                 st.altair_chart(
                     model_bar(
-                        latest, "적중률", "15분 이상 지연 적중률 — 높을수록 좋음", ".0%", "-x"
+                        hits,
+                        "적중률",
+                        "15분 이상 지연 적중률 — 높을수록 좋음",
+                        ".0%",
+                        "-x",
+                        label_col="적중_라벨",
                     ),
                     use_container_width=True,
                 )
