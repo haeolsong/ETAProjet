@@ -41,7 +41,7 @@ python src/collect_flights.py --date 2026-09-08  # 특정일 강제 재수집
 - 저장 위치: `data/raw/flights_{YYYY-MM-DD}.csv` — **운항일 기준**
 - 출발지연용: `data/raw/flights_origin_{YYYY-MM-DD}.csv` (GMP·CJU 출발 김해행)
 - 자동 실행: 매일 04:00 (`scripts/install_scheduler.sh` 로 등록)
-- 정상 수집 시 하루 약 400~430건(도착 ~200 + 출발 ~220)
+- 정상 수집 시 하루 500건 내외(도착 ~245 + 출발 ~260)
 
 ### 조회 범위가 D-3 까지다
 
@@ -69,7 +69,7 @@ tail -20 data/raw/collect.log
 # 최근 수집 현황 — 빠진 날짜가 3일 이내인지 확인 (그 이상이면 복구 불가)
 ls data/raw/flights_*.csv | tail -7
 
-# 어제치 건수 (400건 내외가 정상)
+# 어제치 건수 (500건 내외가 정상)
 wc -l data/raw/flights_$(date -v-1d +%F).csv
 ```
 
