@@ -58,6 +58,11 @@ LABEL = "#7b7b79"
 
 MAX_BACKFILL_DAYS = 3
 
+# 예측 탭의 기본 운항일. 최신 관측일로 두면 항공편이 아직 전처리 전이라 실제값 없이
+# 예측만 뜬다. 테스트 구간 안이면서 종일 비·저시정이었던 날로 고정한다.
+PREDICT_DEFAULT_DAY = pd.Timestamp("2026-10-20").date()
+PREDICT_DEFAULT_HOUR = 19  # 비·시정 4km, 제주발 KE1550 이 이 시각에 도착
+
 METAR_PATH = DATA_PROCESSED / f"metar_{ICAO}.parquet"
 DATASET_PATH = DATA_PROCESSED / "dataset.parquet"
 METRICS_PATH = DATA_PROCESSED / "metrics.csv"
@@ -578,12 +583,12 @@ with tab_predict:
         c1, c2, c3, c4 = st.columns(4)
         day = c1.date_input(
             "운항일",
-            value=latest_obs.date(),
+            value=PREDICT_DEFAULT_DAY,
             min_value=dataset.sched_time.min().date(),
             max_value=latest_obs.date(),
         )
         hour = c2.selectbox(
-            "계획 도착 시각", range(24), index=latest_obs.hour, format_func="{:02d}시".format
+            "계획 도착 시각", range(24), index=PREDICT_DEFAULT_HOUR, format_func="{:02d}시".format
         )
         origin = c3.selectbox("출발지", dataset.origin.value_counts().index)
         on_route = dataset[dataset.origin == origin]
