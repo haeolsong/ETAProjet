@@ -1,7 +1,6 @@
 """김해공항 ETA 예측 대시보드.
 
-수집 현황 · 지연 분석 · 기상 · 모델 성능 네 화면으로 구성한다.
-모델 예측 화면은 표본이 모여 예측이 의미를 가질 때(11월) 추가한다.
+수집 현황 · 지연 분석 · 기상 · 모델 성능 · 지연 예측 다섯 화면으로 구성한다.
 
     streamlit run dashboard/app.py
 """
@@ -15,8 +14,10 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from config import DATA_PROCESSED, DATA_RAW, ICAO  # noqa: E402
+from train import DELAY_THRESHOLD, FEATURES_PRE, fit_xgb, split_by_time  # noqa: E402
 
 # 검증된 기본 팔레트 (dataviz 지침). 범주형은 고정 순서로만 쓴다.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]
@@ -94,6 +95,18 @@ def load_dataset(key: tuple) -> pd.DataFrame | None:
 @st.cache_data
 def load_metrics(key: tuple) -> pd.DataFrame | None:
     return pd.read_csv(METRICS_PATH) if METRICS_PATH.exists() else None
+
+
+@st.cache_resource
+def load_predictor(key: tuple):
+    """사전예측 모델. train.py 와 같은 분할로 앞쪽 80% 만 학습한다.
+
+    전체로 학습하면 데이터가 있는 날을 고를 때마다 정답을 본 모델이 맞히는 셈이라
+    시연이 성능을 부풀린다. 테스트 구간을 남겨 두고 그 시작 시각을 함께 돌려준다.
+    """
+    train, test = split_by_time(pd.read_parquet(DATASET_PATH), 0.2)  # train.py 기본값
+    model, cats = fit_xgb(FEATURES_PRE, train)
+    return model, cats, train.delay_minutes.median(), test.sched_time.min()
 
 
 @st.cache_data
@@ -204,8 +217,8 @@ if metar is None:
     )
     st.stop()
 
-tab_collect, tab_delay, tab_wx, tab_model = st.tabs(
-    ["📥 수집 현황", "⏱ 지연 분석", "🌦 기상", "📊 모델 성능"]
+tab_collect, tab_delay, tab_wx, tab_model, tab_predict = st.tabs(
+    ["📥 수집 현황", "⏱ 지연 분석", "🌦 기상", "📊 모델 성능", "🔮 지연 예측"]
 )
 
 # ---------------------------------------------------------------- 수집 현황
@@ -548,3 +561,115 @@ with tab_model:
 
         with st.expander("전체 기록"):
             st.dataframe(metrics.sort_values("run_at", ascending=False), use_container_width=True)
+
+# ---------------------------------------------------------------- 지연 예측
+with tab_predict:
+    if dataset is None:
+        st.info("`python src/preprocess.py` 를 먼저 실행하세요.")
+    else:
+        st.subheader("도착지연 예측")
+        st.caption(
+            "출발 전에 알 수 있는 정보(기상·노선·시간대)만 쓰는 사전예측 모델입니다. "
+            "기상은 고른 시각에 **실제로 관측된** 김해 METAR 를 그대로 넣습니다."
+        )
+        model, cats, median, test_start = load_predictor(stamp(DATASET_PATH))
+
+        latest_obs = metar.obs_time.max()
+        c1, c2, c3, c4 = st.columns(4)
+        day = c1.date_input(
+            "운항일",
+            value=latest_obs.date(),
+            min_value=dataset.sched_time.min().date(),
+            max_value=latest_obs.date(),
+        )
+        hour = c2.selectbox(
+            "계획 도착 시각", range(24), index=latest_obs.hour, format_func="{:02d}시".format
+        )
+        origin = c3.selectbox("출발지", dataset.origin.value_counts().index)
+        on_route = dataset[dataset.origin == origin]
+        airline = c4.selectbox("항공사", on_route.airline.value_counts().index)
+
+        hour_key = pd.Timestamp(day) + pd.Timedelta(hours=hour)
+        wx = metar[metar.hour_key == hour_key]
+
+        if wx.empty:
+            st.warning(f"{hour_key:%Y-%m-%d %H}시 METAR 가 없습니다. 아카이브의 산발적 결측입니다.")
+        else:
+            row = wx.iloc[0].copy()
+            # 노선마다 국내/국제는 하나로 정해져 있다.
+            row["origin"], row["airline"], row["line"] = origin, airline, on_route.line.iloc[0]
+            row["hour"], row["dow"], row["month"] = hour, hour_key.dayofweek, hour_key.month
+            x = pd.DataFrame([row[FEATURES_PRE]]).astype(dict.fromkeys(FEATURES_PRE, float) | cats)
+            pred = float(model.predict(x)[0])
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("사전예측 도착지연", f"{pred:+.0f}분")
+            c2.metric("베이스라인 (학습셋 중앙값)", f"{median:+.0f}분")
+            c3.metric(
+                f"{DELAY_THRESHOLD}분 이상 지연 경고",
+                "경고" if pred >= DELAY_THRESHOLD else "없음",
+            )
+
+            flags = [
+                n
+                for c, n in {
+                    "wx_ra": "비",
+                    "wx_br": "박무",
+                    "wx_fg": "안개",
+                    "wx_ts": "뇌전",
+                }.items()
+                if row[c]
+            ]
+            st.caption(
+                f"사용한 기상 ({hour_key:%m-%d %H}시 관측): 시정 {row.visibility_km:.1f}km · "
+                f"풍속 {row.wind_ms:.1f}m/s · 돌풍 "
+                f"{'없음' if pd.isna(row.gust_ms) else f'{row.gust_ms:.1f}m/s'} · "
+                f"횡풍 {row.crosswind_ms:.1f}m/s · 현상 {', '.join(flags) or '없음'}"
+            )
+
+            if hour_key < test_start:
+                st.warning(
+                    f"**학습에 쓰인 기간입니다.** 모델은 {test_start:%m-%d %H:%M} 이전 편을 보고 "
+                    "학습했으므로 이 시각의 실제값과 가깝게 나와도 성능이 아닙니다. "
+                    f"시연은 {test_start:%m-%d} 이후 날짜로 하세요."
+                )
+
+            actual = dataset[(dataset.hour_key == hour_key) & (dataset.origin == origin)]
+            if actual.empty:
+                st.info(
+                    "이 시각·출발지에 실제 도착 기록이 없습니다 (수집 전이거나 운항이 없는 시각)."
+                )
+            else:
+                st.markdown("**같은 시각·출발지의 실제 도착편**")
+                # 예측은 고른 항공사 한 편에 대한 값인데 표에는 다른 항공사도 섞인다.
+                # 예측 대상을 맨 위로 올리고 표시해 어느 행과 비교할지 드러낸다.
+                mine = actual.airline == airline
+                # 날짜는 위에서 이미 골랐으므로 시각만 찍는다. 자정을 넘겨 도착하면 +1 을 붙인다.
+                next_day = actual.actual_time.dt.date > actual.sched_time.dt.date
+                table = pd.DataFrame(
+                    {
+                        "": mine.map({True: "▶ 예측 대상", False: ""}),
+                        "편명": actual.flight_no,
+                        "항공사": actual.airline,
+                        "계획": actual.sched_time.dt.strftime("%H:%M"),
+                        "실제": actual.actual_time.dt.strftime("%H:%M")
+                        + next_day.map({True: " (+1)", False: ""}),
+                        "실제 지연(분)": actual.delay_minutes,
+                    }
+                ).sort_values("", ascending=False, kind="stable")
+                st.dataframe(table, hide_index=True, use_container_width=True)
+                if not mine.any():
+                    st.caption(
+                        f"이 시각에 {airline} 편은 없었습니다. 다른 항공사 편만 참고로 보여줍니다."
+                    )
+
+        # 화면의 숫자 하나가 확정 예보처럼 읽히지 않도록, 이 모델이 얼마나 틀리는지 붙인다.
+        if metrics is not None:
+            pre = metrics[(metrics.subset == "전체") & metrics.model.str.contains("사전예측")]
+            if len(pre):
+                last = pre.iloc[-1]
+                st.info(
+                    f"이 모델은 테스트셋 {int(last.n_test):,}편에서 평균 **{last.MAE:.1f}분** 틀렸고, "
+                    f"{DELAY_THRESHOLD}분 이상 지연편 {int(last.실제지연편수)}편 중 "
+                    f"**{last.적중률:.0%}** 만 미리 경고했습니다. 참고값으로 보세요."
+                )

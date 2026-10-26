@@ -101,16 +101,22 @@ def evaluate(name: str, y_true, y_pred) -> dict:
     }
 
 
-def run_xgb(name: str, features: list[str], train: pd.DataFrame, test: pd.DataFrame) -> dict:
+def fit_xgb(features: list[str], train: pd.DataFrame) -> tuple[XGBRegressor, dict]:
+    """학습셋으로 모델을 맞춘다. 예측 입력에도 같은 범주를 입혀야 하므로 함께 돌려준다."""
     x_train = train[features].copy()
-    x_test = test[features].copy()
+    cats = {}
     for col in set(CATEGORICAL) & set(features):
-        cats = pd.CategoricalDtype(x_train[col].dropna().unique())
-        x_train[col] = x_train[col].astype(cats)
-        x_test[col] = x_test[col].astype(cats)
+        cats[col] = pd.CategoricalDtype(x_train[col].dropna().unique())
+        x_train[col] = x_train[col].astype(cats[col])
 
     model = XGBRegressor(**PARAMS)
     model.fit(x_train, train[TARGET])
+    return model, cats
+
+
+def run_xgb(name: str, features: list[str], train: pd.DataFrame, test: pd.DataFrame) -> dict:
+    model, cats = fit_xgb(features, train)
+    x_test = test[features].astype(cats)
     return evaluate(name, test[TARGET], model.predict(x_test))
 
 
