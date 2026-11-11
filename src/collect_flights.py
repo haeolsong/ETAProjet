@@ -18,6 +18,7 @@ import argparse
 import csv
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote
@@ -34,10 +35,31 @@ KST = ZoneInfo("Asia/Seoul")
 BASE = "https://apis.data.go.kr/B551178/flight-status"
 ROWS = 100  # 문서에 없지만 100 초과 시 HTTP_ERROR 가 난다
 MAX_BACKFILL_DAYS = 3  # API 가 D-3 까지만 준다
+RETRIES = 4  # 타임아웃·연결 끊김·5xx 시 최초 1회 + 재시도 3회 (10·20·30초 대기)
 
 # 김해 도착편의 출발지연을 얻으려면 출발지 공항에서 따로 조회해야 한다.
 # 이 API 는 한국공항공사 소관이라 국내선 출발지만 가능하다(해외·인천 제외).
 ORIGINS = ("GMP", "CJU")
+
+
+def get_with_retry(url: str, params: dict) -> requests.Response:
+    """apis.data.go.kr 은 가끔 응답 없이 끊거나 타임아웃·500 이 난다. 몇 번 다시 시도한다.
+
+    마지막 시도의 5xx 응답은 그대로 돌려주어 호출부의 raise_for_status() 가 잡게 한다.
+    """
+    for attempt in range(1, RETRIES + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=60)
+            if resp.status_code < 500 or attempt == RETRIES:
+                return resp
+            reason = f"HTTP {resp.status_code}"
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if attempt == RETRIES:
+                raise
+            reason = type(e).__name__
+        wait = 10 * attempt
+        print(f"  요청 실패({reason}) — {wait}초 뒤 재시도 {attempt}/{RETRIES - 1}")
+        time.sleep(wait)
 
 
 def fetch(kind: str, key: str, searchday: str, airport: str = IATA) -> list[dict]:
@@ -45,7 +67,7 @@ def fetch(kind: str, key: str, searchday: str, airport: str = IATA) -> list[dict
     items: list[dict] = []
     page = 1
     while True:
-        resp = requests.get(
+        resp = get_with_retry(
             f"{BASE}/{kind}",
             params={
                 "serviceKey": key,
@@ -55,7 +77,6 @@ def fetch(kind: str, key: str, searchday: str, airport: str = IATA) -> list[dict
                 "airport_code": airport,
                 "type": "json",
             },
-            timeout=60,
         )
         resp.raise_for_status()
         payload = resp.json()
