@@ -94,6 +94,10 @@ PARAMS = dict(
 # 0.3 은 주간 4폴드에서 적중 47% · 오경보 57% (0.5 면 27% · 39%). 놓침과 헛경보의 교환이다.
 WARN_PROB = 0.3
 
+# 이날부터의 수집분은 최종 검증용이다. 피처·설정을 고르는 동안(기본 실행, --weekly)에는 보지 않고,
+# --final 로 한 번만 잰다. 고르면서 본 구간의 성능은 낙관적이기 때문이다.
+HOLDOUT_START = pd.Timestamp("2026-11-14")
+
 
 def split_by_time(df: pd.DataFrame, test_frac: float) -> tuple[pd.DataFrame, pd.DataFrame]:
     """시간 순으로 뒤쪽 test_frac 을 테스트셋으로 뗀다."""
@@ -210,6 +214,11 @@ def main() -> None:
         action="store_true",
         help="마지막 4주를 한 주씩 테스트셋으로 돌려 평균을 낸다. 테스트 구간 하나에 맞춘 착시를 막는다.",
     )
+    parser.add_argument(
+        "--final",
+        action="store_true",
+        help=f"최종 검증: {HOLDOUT_START:%m-%d} 전 전부로 학습하고 그 뒤 수집분으로 평가한다. 보고서용, 한 번만.",
+    )
     args = parser.parse_args()
 
     path = DATA_PROCESSED / "dataset.parquet"
@@ -227,11 +236,24 @@ def main() -> None:
         subset = "국내선(출발지연 보유)"
         print(f"부분집합: {subset} {len(df):,}행\n")
 
-    if args.weekly:
-        weekly(df, subset)
-        return
+    if args.final:
+        train, test = df[df["sched_time"] < HOLDOUT_START], df[df["sched_time"] >= HOLDOUT_START]
+        if test.empty:
+            sys.exit(f"{HOLDOUT_START:%m-%d} 이후 수집분이 없다. 수집·전처리 후 다시 실행한다.")
+        subset += " · 최종검증"
+    else:
+        held = (df["sched_time"] >= HOLDOUT_START).sum()
+        if held:
+            print(
+                f"최종 검증 구간({HOLDOUT_START:%m-%d}~) {held:,}행은 제외한다. 평가는 --final 로.\n"
+            )
+        df = df[df["sched_time"] < HOLDOUT_START]
 
-    train, test = split_by_time(df, args.test_frac)
+        if args.weekly:
+            weekly(df, subset)
+            return
+
+        train, test = split_by_time(df, args.test_frac)
     print(f"학습 {len(train):,}행 (~{train['sched_time'].max():%Y-%m-%d %H:%M})")
     print(f"테스트 {len(test):,}행 ({test['sched_time'].min():%Y-%m-%d %H:%M}~)\n")
 
