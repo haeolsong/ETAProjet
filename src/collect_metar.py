@@ -14,7 +14,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import DATA_RAW, ICAO  # noqa: E402
+from config import DATA_RAW, ICAO, ORIGIN_ICAO  # noqa: E402
 
 URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
 
@@ -65,23 +65,36 @@ def main() -> None:
     parser.add_argument("--start-year", type=int, default=2019)
     parser.add_argument("--end-year", type=int, default=date.today().year)
     parser.add_argument("--force", action="store_true", help="이미 받은 연도도 다시 받는다")
+    parser.add_argument(
+        "--origins",
+        action="store_true",
+        help="김해 외에 출발지 공항(config.ORIGIN_ICAO)의 올해 자료도 받는다",
+    )
     args = parser.parse_args()
 
     DATA_RAW.mkdir(parents=True, exist_ok=True)
 
-    for year in range(args.start_year, args.end_year + 1):
-        out = DATA_RAW / f"metar_{args.station}_{year}.csv"
+    collect(args.station, args.start_year, args.end_year, args.force)
+    if args.origins:
+        # 항공편이 2026 년부터만 있으므로 출발지는 올해치만 받는다.
+        for station in ORIGIN_ICAO.values():
+            collect(station, date.today().year, date.today().year, args.force)
+
+
+def collect(station: str, start_year: int, end_year: int, force: bool) -> None:
+    for year in range(start_year, end_year + 1):
+        out = DATA_RAW / f"metar_{station}_{year}.csv"
 
         # 지난 연도 파일은 더 늘어나지 않으므로 건너뛴다. 올해 파일은 항상 갱신.
         # 단 해가 끝나기 전에 받은 파일은 연말분이 빠져 있으므로, 이듬해 1월 2일 이후에
         # 받은 파일만 완결로 본다 (1월 1~2일 실행분이 전년도를 다시 받는다).
         finished = out.exists() and date.fromtimestamp(out.stat().st_mtime) >= date(year + 1, 1, 2)
-        if finished and not args.force and year < date.today().year:
+        if finished and not force and year < date.today().year:
             print(f"[건너뜀] {year} — 이미 있음 ({out.name})")
             continue
 
         print(f"[수집] {year} ...", end=" ", flush=True)
-        text = fetch_year(args.station, year)
+        text = fetch_year(station, year)
         rows = text.count("\n") - 1  # 헤더 제외
 
         if rows <= 0:
@@ -92,8 +105,8 @@ def main() -> None:
         print(f"{rows:,}행 → {out.name}")
         time.sleep(1)  # 공개 아카이브에 대한 예의
 
-    print("\n완료. 수집된 파일:")
-    for f in sorted(DATA_RAW.glob(f"metar_{args.station}_*.csv")):
+    print(f"\n{station} 완료. 수집된 파일:")
+    for f in sorted(DATA_RAW.glob(f"metar_{station}_*.csv")):
         print(f"  {f.name}  ({f.stat().st_size / 1024:,.0f} KB)")
 
 

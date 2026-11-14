@@ -64,6 +64,10 @@ FEATURES_PRE = [
     "month",
 ]
 
+# 출발지 공항의 도착 1~3시간 전 기상(최악값). 김해 기상만으로는 예측이 되지 않았다.
+ORIGIN_WX = ["o_vis", "o_wind", "o_gust", "o_ra", "o_ts"]
+FEATURES_PRE += ORIGIN_WX
+
 # 김해에서 먼저 나간 짝편의 출발지연. 짝편이 없으면 NaN 이고 XGBoost 가 그대로 처리한다.
 FEATURES_ROT = [*FEATURES_PRE, "rot_delay"]
 

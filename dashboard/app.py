@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from config import DATA_PROCESSED, DATA_RAW, ICAO  # noqa: E402
-from train import DELAY_THRESHOLD, FEATURES_PRE, fit_xgb, split_by_time  # noqa: E402
+from train import DELAY_THRESHOLD, FEATURES_PRE, ORIGIN_WX, fit_xgb, split_by_time  # noqa: E402
 
 # 검증된 기본 팔레트 (dataviz 지침). 범주형은 고정 순서로만 쓴다.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]
@@ -604,6 +604,10 @@ with tab_predict:
             # 노선마다 국내/국제는 하나로 정해져 있다.
             row["origin"], row["airline"], row["line"] = origin, airline, on_route.line.iloc[0]
             row["hour"], row["dow"], row["month"] = hour, hour_key.dayofweek, hour_key.month
+            # 출발지 기상(o_*)은 dataset 에 붙어 있는 같은 노선·시각의 값을 쓴다. 없으면 NaN.
+            same = dataset[(dataset.origin == origin) & (dataset.hour_key == hour_key)]
+            for col in ORIGIN_WX:
+                row[col] = same[col].iloc[0] if len(same) else float("nan")
             x = pd.DataFrame([row[FEATURES_PRE]]).astype(dict.fromkeys(FEATURES_PRE, float) | cats)
             pred = float(model.predict(x)[0])
 

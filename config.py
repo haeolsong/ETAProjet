@@ -14,6 +14,26 @@ DATA_PROCESSED = ROOT / "data" / "processed"
 ICAO = "RKPK"
 IATA = "PUS"
 
+# --- 출발지 공항 (김해 도착편의 약 80%, 2026-11-13 기준 편수 상위 15곳) ---
+# IATA → ICAO. 출발지 기상(METAR)을 붙이는 데 쓴다. 목록 밖 출발지는 NaN 으로 남는다.
+ORIGIN_ICAO = {
+    "CJU": "RKPC",
+    "GMP": "RKSS",
+    "TPE": "RCTP",
+    "FUK": "RJFF",
+    "KIX": "RJBB",
+    "NRT": "RJAA",
+    "ICN": "RKSI",
+    "PVG": "ZSPD",
+    "DAD": "VVDN",
+    "CXR": "VVCR",
+    "CTS": "RJCC",
+    "HKG": "VHHH",
+    "KHH": "RCKH",
+    "BKK": "VTBS",
+    "HAN": "VVNB",
+}
+
 # --- 출력 가독성 ---
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 200)

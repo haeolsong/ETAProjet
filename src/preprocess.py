@@ -15,7 +15,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import DATA_PROCESSED, DATA_RAW, ICAO  # noqa: E402
+from config import DATA_PROCESSED, DATA_RAW, ICAO, ORIGIN_ICAO  # noqa: E402
 
 # 기상현상 코드 중 지연과 직결되는 것들
 # 김해공항 활주로 진방위(TRUE BRG). 18L·18R 이 평행이라 하나로 계산한다.
@@ -203,6 +203,40 @@ def add_rot_delay(flights: pd.DataFrame) -> pd.DataFrame:
     return merged.drop(columns=["out_no", "flight_date", "out_actual"])
 
 
+def add_origin_weather(flights: pd.DataFrame) -> pd.DataFrame:
+    """출발지 공항의 도착 1~3시간 전 기상을 o_* 로 붙인다.
+
+    출발 시각은 국내선만 알 수 있어, 도착 계획시각 기준 직전 3시간 창으로 대신한다
+    (비행시간 1~3시간 노선이 대부분이다). 창 안의 최악값을 쓴다: 최저 시정, 최대
+    풍속·돌풍, 비·뇌우 유무. config.ORIGIN_ICAO 밖의 출발지는 NaN 으로 남는다.
+    """
+    parts = []
+    for iata, icao in ORIGIN_ICAO.items():
+        if not any(DATA_RAW.glob(f"metar_{icao}_*.csv")):
+            continue
+        m = add_time_keys(to_metric(load_metar(icao)))
+        m = m.drop_duplicates(subset="hour_key", keep="last").set_index("hour_key")
+        m = m.reindex(pd.date_range(m.index.min(), m.index.max(), freq="h"))
+
+        # shift(1): 도착 시각의 관측은 빼고 그 앞 3시간만 본다
+        win = m.rolling(3, min_periods=1)
+        w = pd.DataFrame(
+            {
+                "o_vis": win["visibility_km"].min(),
+                "o_wind": win["wind_ms"].max(),
+                "o_gust": win["gust_ms"].max(),
+                "o_ra": win["wx_ra"].max(),
+                "o_ts": win["wx_ts"].max(),
+            }
+        ).shift(1)
+        w["origin"] = iata
+        parts.append(w.rename_axis("hour_key").reset_index())
+
+    if not parts:
+        return flights
+    return flights.merge(pd.concat(parts), on=["origin", "hour_key"], how="left")
+
+
 def merge(flights: pd.DataFrame, metar: pd.DataFrame) -> pd.DataFrame:
     """계획도착시각의 시(hour) 를 키로 기상 관측을 붙인다."""
     # hour·month 는 항공편 쪽에서 이미 만들었다. 기상 관측 쪽 것을 쓰면
@@ -244,6 +278,10 @@ def main() -> None:
     merged = add_rot_delay(merged)
     filled = merged["rot_delay"].notna().mean() * 100
     print(f"회전편 지연 매칭 {filled:.1f}% (편명 −1 짝편, 50% 내외가 정상)")
+
+    merged = add_origin_weather(merged)
+    filled = merged["o_vis"].notna().mean() * 100
+    print(f"출발지 기상 매칭 {filled:.1f}% (상위 15개 출발지, 80% 내외가 정상)")
 
     out = DATA_PROCESSED / "dataset.parquet"
     merged.to_parquet(out, index=False)
