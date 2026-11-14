@@ -237,6 +237,20 @@ def add_origin_weather(flights: pd.DataFrame) -> pd.DataFrame:
     return flights.merge(pd.concat(parts), on=["origin", "hour_key"], how="left")
 
 
+def add_flight_history(flights: pd.DataFrame) -> pd.DataFrame:
+    """편명별 과거 이력을 붙인다. 그 편 이전 운항분만 쓴다(shift) — 당일 실적은 섞이지 않는다.
+
+    fn_med: 지난 운항의 지연 중앙값, fn_late: 15분 이상 지연 비율, fn_n: 지난 운항 횟수.
+    같은 편명은 시간표·기종·여유시간이 거의 같아, 노선·항공사보다 촘촘한 기준이 된다.
+    """
+    flights = flights.sort_values("sched_time").reset_index(drop=True)
+    past = flights.groupby("flight_no")["delay_minutes"]
+    flights["fn_med"] = past.transform(lambda s: s.shift(1).expanding().median())
+    flights["fn_late"] = past.transform(lambda s: (s.shift(1) >= 15).expanding().mean())
+    flights["fn_n"] = past.cumcount()
+    return flights
+
+
 def merge(flights: pd.DataFrame, metar: pd.DataFrame) -> pd.DataFrame:
     """계획도착시각의 시(hour) 를 키로 기상 관측을 붙인다."""
     # hour·month 는 항공편 쪽에서 이미 만들었다. 기상 관측 쪽 것을 쓰면
@@ -282,6 +296,8 @@ def main() -> None:
     merged = add_origin_weather(merged)
     filled = merged["o_vis"].notna().mean() * 100
     print(f"출발지 기상 매칭 {filled:.1f}% (상위 15개 출발지, 80% 내외가 정상)")
+
+    merged = add_flight_history(merged)
 
     out = DATA_PROCESSED / "dataset.parquet"
     merged.to_parquet(out, index=False)

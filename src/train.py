@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from xgboost import XGBRegressor
+from xgboost import XGBClassifier, XGBRegressor
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -68,6 +68,10 @@ FEATURES_PRE = [
 ORIGIN_WX = ["o_vis", "o_wind", "o_gust", "o_ra", "o_ts"]
 FEATURES_PRE += ORIGIN_WX
 
+# 편명별 과거 이력(그날 이전 운항분만). 주간 4폴드에서 MAE 를 평균 0.7분 줄였다.
+FLIGHT_HIST = ["fn_med", "fn_late", "fn_n"]
+FEATURES_PRE += FLIGHT_HIST
+
 # 김해에서 먼저 나간 짝편의 출발지연. 짝편이 없으면 NaN 이고 XGBoost 가 그대로 처리한다.
 FEATURES_ROT = [*FEATURES_PRE, "rot_delay"]
 
@@ -81,7 +85,14 @@ PARAMS = dict(
     colsample_bytree=0.8,
     enable_categorical=True,
     random_state=42,
+    # MAE 를 직접 줄인다. 기본(제곱오차)은 평균을 좇아 드문 대형 지연에 끌려가서
+    # 평범한 편까지 늦게 예측했다 — ±10분 이내 비율이 베이스라인보다 낮았던 원인이다.
+    objective="reg:absoluteerror",
 )
+
+# 지연 경고는 회귀값이 아니라 분류기 확률로 낸다. 중앙값을 좇는 회귀는 15분을 거의 넘지 않는다.
+# 0.3 은 주간 4폴드에서 적중 47% · 오경보 57% (0.5 면 27% · 39%). 놓침과 헛경보의 교환이다.
+WARN_PROB = 0.3
 
 
 def split_by_time(df: pd.DataFrame, test_frac: float) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -104,6 +115,10 @@ def evaluate(name: str, y_true, y_pred) -> dict:
         "MAE": mean_absolute_error(y_true, y_pred),
         "RMSE": mean_squared_error(y_true, y_pred) ** 0.5,
         "R2": r2_score(y_true, y_pred),
+        # 사람이 읽는 '맞힌 비율'. MAE 가 같아도 이 값은 크게 다를 수 있다.
+        "±10분비율": (
+            abs(pd.Series(y_true).to_numpy() - pd.Series(y_pred).to_numpy()) <= 10
+        ).mean(),
         "실제지연편수": int(actual.sum()),
         "적중률": hit / actual.sum() if actual.any() else float("nan"),
         "오경보율": 1 - hit / flagged.sum() if flagged.any() else float("nan"),
@@ -129,6 +144,53 @@ def run_xgb(name: str, features: list[str], train: pd.DataFrame, test: pd.DataFr
     return evaluate(name, test[TARGET], model.predict(x_test))
 
 
+def run_warning(features: list[str], train: pd.DataFrame, test: pd.DataFrame) -> dict:
+    """15분 이상 지연 확률 분류기. 적중률·오경보율만 의미가 있다."""
+    x_train = train[features].copy()
+    cats = {}
+    for col in set(CATEGORICAL) & set(features):
+        cats[col] = pd.CategoricalDtype(x_train[col].dropna().unique())
+        x_train[col] = x_train[col].astype(cats[col])
+
+    params = {k: v for k, v in PARAMS.items() if k != "objective"}
+    clf = XGBClassifier(**params)
+    clf.fit(x_train, train[TARGET] >= DELAY_THRESHOLD)
+    flagged = clf.predict_proba(test[features].astype(cats))[:, 1] >= WARN_PROB
+    actual = test[TARGET].to_numpy() >= DELAY_THRESHOLD
+    hit = (actual & flagged).sum()
+    return {
+        "model": f"XGBoost 지연경고(p≥{WARN_PROB})",
+        "n_test": len(test),
+        "실제지연편수": int(actual.sum()),
+        "적중률": hit / actual.sum() if actual.any() else float("nan"),
+        "오경보율": 1 - hit / flagged.sum() if flagged.any() else float("nan"),
+    }
+
+
+def weekly(df: pd.DataFrame, subset: str) -> None:
+    """마지막 4주를 한 주씩 테스트셋으로 쓴다. 각 주는 그 이전 자료 전부로 학습한다."""
+    end = df["sched_time"].max().normalize() + pd.Timedelta(days=1)
+    starts = [end - pd.Timedelta(weeks=k) for k in (4, 3, 2, 1)]
+    stages = [("XGBoost 사전예측", FEATURES_PRE), ("XGBoost 회전편후", FEATURES_ROT)]
+    if subset != "전체":
+        stages.append(("XGBoost 이륙후", [*FEATURES_ROT, "dep_delay"]))
+
+    rows = []
+    for a in starts:
+        train = df[df["sched_time"] < a]
+        test = df[(df["sched_time"] >= a) & (df["sched_time"] < a + pd.Timedelta(weeks=1))]
+        median = train[TARGET].median()
+        rows.append(evaluate("베이스라인", test[TARGET], [median] * len(test)))
+        rows += [run_xgb(name, feats, train, test) for name, feats in stages]
+        rows.append(run_warning(FEATURES_ROT, train, test))
+        print(f"  {a:%m-%d} 주 테스트 {len(test):,}편")
+
+    cols = ["MAE", "RMSE", "±10분비율", "적중률", "오경보율"]
+    table = pd.DataFrame(rows).groupby("model", sort=False)[cols].mean()
+    print(f"\n[{subset}] 주간 4폴드 평균 ({starts[0]:%m-%d}~{end:%m-%d})")
+    print(table.round(3).to_string())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="ETA 예측 모델 학습·평가")
     parser.add_argument("--test-frac", type=float, default=0.2, help="테스트셋 비율 (기본 0.2)")
@@ -136,6 +198,11 @@ def main() -> None:
         "--dep-delay-only",
         action="store_true",
         help="출발지연이 있는 행만 남긴다. 세 모델을 같은 표본에서 비교할 때 쓴다.",
+    )
+    parser.add_argument(
+        "--weekly",
+        action="store_true",
+        help="마지막 4주를 한 주씩 테스트셋으로 돌려 평균을 낸다. 테스트 구간 하나에 맞춘 착시를 막는다.",
     )
     args = parser.parse_args()
 
@@ -154,6 +221,10 @@ def main() -> None:
         subset = "국내선(출발지연 보유)"
         print(f"부분집합: {subset} {len(df):,}행\n")
 
+    if args.weekly:
+        weekly(df, subset)
+        return
+
     train, test = split_by_time(df, args.test_frac)
     print(f"학습 {len(train):,}행 (~{train['sched_time'].max():%Y-%m-%d %H:%M})")
     print(f"테스트 {len(test):,}행 ({test['sched_time'].min():%Y-%m-%d %H:%M}~)\n")
@@ -167,6 +238,9 @@ def main() -> None:
 
     # 3. 회전편 후 — 김해발 짝편이 출발한 상태. 전체 표본에서 돌린다.
     results.append(run_xgb("XGBoost 회전편후", FEATURES_ROT, train, test))
+
+    # 지연 경고 — 회전편후까지의 정보로 15분 이상 지연 확률을 낸다.
+    results.append(run_warning(FEATURES_ROT, train, test))
 
     # 4. 이륙 후 — 출발지연까지 아는 상태. 국내선만 있어 같은 부분집합에서 비교한다.
     if args.dep_delay_only:
