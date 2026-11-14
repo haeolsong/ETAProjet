@@ -20,19 +20,23 @@ from config import DATA_PROCESSED, DATA_RAW, ICAO  # noqa: E402
 from train import (  # noqa: E402
     DELAY_THRESHOLD,
     FEATURES_PRE,
+    FEATURES_ROT,
     FLIGHT_HIST,
     ORIGIN_WX,
+    WARN_PROB,
+    fit_warning,
     fit_xgb,
     split_by_time,
-)  # noqa: E402
+)
 
 # 검증된 기본 팔레트 (dataviz 지침). 범주형은 고정 순서로만 쓴다.
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]
+SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
 # 모델명에는 중앙값이 박혀 있어(베이스라인(중앙값 -9분)) 표본마다 문자열이 달라진다.
 # 색을 model 에 직접 걸면 domain 이 차트마다 새로 잡혀 같은 모델이 다른 색을 받는다
 # (모델 비교에서 초록이던 베이스라인이 성능 추이에서 주황이었다). 계열명에 고정한다.
 # 메인 서사인 사전예측이 첫 색(파랑)을 갖는다. 베이스라인은 기준선일 뿐이다.
-SERIES_ORDER = ["사전예측", "베이스라인", "이륙후"]
+# 회전편후·지연경고는 11-14 방향 전환 때 추가됐다. 슬롯 4·5 를 이어 붙여 기존 색을 지킨다.
+SERIES_ORDER = ["사전예측", "베이스라인", "이륙후", "회전편후", "지연경고"]
 
 
 def series_of(model: str) -> str:
@@ -69,6 +73,11 @@ MAX_BACKFILL_DAYS = 3
 # 예측만 뜬다. 테스트 구간 안이면서 종일 비·저시정이었던 날로 고정한다.
 PREDICT_DEFAULT_DAY = pd.Timestamp("2026-10-20").date()
 PREDICT_DEFAULT_HOUR = 19  # 비·시정 4km, 제주발 KE1550 이 이 시각에 도착
+
+# 단계별 시연의 기본 편. 팀원이 직접 탑승한 편이라 발표 사례로 쓴다(짝편이 29분 늦었지만
+# 2분 일찍 도착 — 회전편 정보가 예측을 실제 쪽으로 옮기는 장면).
+DEMO_DAY = pd.Timestamp("2026-11-11").date()
+DEMO_FLIGHT = "LJ616"
 
 METAR_PATH = DATA_PROCESSED / f"metar_{ICAO}.parquet"
 DATASET_PATH = DATA_PROCESSED / "dataset.parquet"
@@ -119,6 +128,25 @@ def load_predictor(key: tuple):
     train, test = split_by_time(pd.read_parquet(DATASET_PATH), 0.2)  # train.py 기본값
     model, cats = fit_xgb(FEATURES_PRE, train)
     return model, cats, train.delay_minutes.median(), test.sched_time.min()
+
+
+@st.cache_resource
+def load_stage_models(key: tuple, day):
+    """단계별 모델을 운항일 전날까지의 자료로만 학습한다. 그날 실적은 보지 않는다.
+
+    고른 편이 학습에 들어 있으면 시연이 성능을 부풀린다. 날짜마다 다시 학습하므로
+    처음 고를 때 몇 초 걸리고, 같은 날짜는 캐시된다.
+    """
+    df = pd.read_parquet(DATASET_PATH)
+    train = df[df.sched_time < pd.Timestamp(day)]
+    domestic = train[train.dep_delay.notna()]
+    return {
+        "사전예측": fit_xgb(FEATURES_PRE, train),
+        "회전편후": fit_xgb(FEATURES_ROT, train),
+        "이륙후": fit_xgb([*FEATURES_ROT, "dep_delay"], domestic),
+        "경고": fit_warning(FEATURES_ROT, train),
+        "median": train.delay_minutes.median(),
+    }
 
 
 @st.cache_data
@@ -174,6 +202,9 @@ def model_bar(
     # 차트 밖으로 밀려 잘린다. 여유를 15% 고정으로 뒀더니 다시 잘렸다("11.76" 이
     # "11.7" 로 보였다) - 잘림은 값의 크기가 아니라 라벨의 글자 수에서 온다.
     # 최댓값 라벨이 4자(9.71)일 때 우연히 맞았을 뿐이다. 글자당 6% 로 잡는다.
+    # 지연경고 분류기는 MAE 가 없고 회귀 모델은 경고 지표만 비어 있을 수 있다. 값이 없는
+    # 행을 남기면 막대 없이 "NaN" 라벨만 찍힌다.
+    data = data[data[field].notna()]
     hi = data[field].max()
     x_scale = alt.Undefined
     if pd.notna(hi) and hi > 0:
@@ -689,4 +720,91 @@ with tab_predict:
                     f"이 모델은 테스트셋 {int(last.n_test):,}편에서 평균 **{last.MAE:.1f}분** 틀렸고, "
                     f"{DELAY_THRESHOLD}분 이상 지연편 {int(last.실제지연편수)}편 중 "
                     f"**{last.적중률:.0%}** 만 미리 경고했습니다. 참고값으로 보세요."
+                )
+
+        # ------------------------------------------------ 실제 편으로 단계별 시연
+        st.divider()
+        st.subheader("실제 운항편 단계별 예측")
+        st.caption(
+            "실제로 운항한 편을 골라, 정보가 늘어날 때마다 예측이 어떻게 바뀌는지 봅니다. "
+            "모델은 **운항일 전날까지의 자료로만** 학습하므로 그날 실적은 보지 않습니다."
+        )
+        days = sorted(dataset.sched_time.dt.date.unique())
+        c1, c2 = st.columns([1, 2])
+        demo_day = c1.date_input(
+            "운항일 ",
+            value=DEMO_DAY if DEMO_DAY in days else days[-1],
+            min_value=days[1],  # 첫날은 학습 자료가 없다
+            max_value=days[-1],
+        )
+        flights = dataset[dataset.sched_time.dt.date == demo_day].sort_values("sched_time")
+        if flights.empty:
+            st.info("이 날짜에 수집된 도착편이 없습니다.")
+        else:
+            labels = (
+                flights.flight_no
+                + " · "
+                + flights.origin
+                + "→PUS · "
+                + flights.sched_time.dt.strftime("%H:%M")
+            ).tolist()
+            default = next((i for i, f in enumerate(flights.flight_no) if f == DEMO_FLIGHT), 0)
+            pick = c2.selectbox(
+                "도착편", range(len(labels)), index=default, format_func=labels.__getitem__
+            )
+            f = flights.iloc[[pick]]
+            m = load_stage_models(stamp(DATASET_PATH), demo_day)
+
+            def predict(name: str, feats: list[str]) -> float:
+                model, cats = m[name]
+                return float(model.predict(f[feats].astype(cats))[0])
+
+            stages = [("베이스라인", m["median"], "학습셋 중앙값")]
+            stages.append(("사전예측", predict("사전예측", FEATURES_PRE), "출발 전"))
+            rot = f.rot_delay.iloc[0]
+            stages.append(
+                (
+                    "회전편후",
+                    predict("회전편후", FEATURES_ROT),
+                    "짝편 정보 없음" if pd.isna(rot) else f"짝편 출발지연 {rot:+.0f}분",
+                )
+            )
+            dep = f.dep_delay.iloc[0]
+            if pd.notna(dep):
+                stages.append(
+                    (
+                        "이륙후",
+                        predict("이륙후", [*FEATURES_ROT, "dep_delay"]),
+                        f"출발지연 {dep:+.0f}분",
+                    )
+                )
+
+            actual_delay = f.delay_minutes.iloc[0]
+            cols = st.columns(len(stages) + 1)
+            for col, (name, value, note) in zip(cols[:-1], stages, strict=True):
+                col.metric(
+                    name,
+                    f"{value:+.0f}분",
+                    f"오차 {abs(value - actual_delay):.0f}분",
+                    delta_color="off",
+                    help=note,
+                )
+                col.caption(note)
+            cols[-1].metric("실제", f"{actual_delay:+.0f}분")
+            cols[-1].caption(
+                f"{f.sched_time.iloc[0]:%H:%M} 계획 → {f.actual_time.iloc[0]:%H:%M} 도착"
+            )
+
+            clf, cats = m["경고"]
+            prob = float(clf.predict_proba(f[FEATURES_ROT].astype(cats))[0, 1])
+            warned = prob >= WARN_PROB
+            st.markdown(
+                f"**{DELAY_THRESHOLD}분 이상 지연 확률 {prob:.0%}** → "
+                + ("⚠️ 경고" if warned else "경고 없음")
+                + f" (기준 {WARN_PROB:.0%}) · 실제 "
+                + ("지연" if actual_delay >= DELAY_THRESHOLD else "지연 아님")
+            )
+            if pd.isna(dep):
+                st.caption(
+                    "이륙후 단계는 김포·제주 출발 국내선에만 있습니다(출발지연 자료가 국내선뿐)."
                 )

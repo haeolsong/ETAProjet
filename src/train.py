@@ -144,8 +144,8 @@ def run_xgb(name: str, features: list[str], train: pd.DataFrame, test: pd.DataFr
     return evaluate(name, test[TARGET], model.predict(x_test))
 
 
-def run_warning(features: list[str], train: pd.DataFrame, test: pd.DataFrame) -> dict:
-    """15분 이상 지연 확률 분류기. 적중률·오경보율만 의미가 있다."""
+def fit_warning(features: list[str], train: pd.DataFrame) -> tuple[XGBClassifier, dict]:
+    """15분 이상 지연 확률 분류기를 맞춘다. fit_xgb 처럼 범주도 함께 돌려준다."""
     x_train = train[features].copy()
     cats = {}
     for col in set(CATEGORICAL) & set(features):
@@ -155,6 +155,12 @@ def run_warning(features: list[str], train: pd.DataFrame, test: pd.DataFrame) ->
     params = {k: v for k, v in PARAMS.items() if k != "objective"}
     clf = XGBClassifier(**params)
     clf.fit(x_train, train[TARGET] >= DELAY_THRESHOLD)
+    return clf, cats
+
+
+def run_warning(features: list[str], train: pd.DataFrame, test: pd.DataFrame) -> dict:
+    """15분 이상 지연 확률 분류기. 적중률·오경보율만 의미가 있다."""
+    clf, cats = fit_warning(features, train)
     flagged = clf.predict_proba(test[features].astype(cats))[:, 1] >= WARN_PROB
     actual = test[TARGET].to_numpy() >= DELAY_THRESHOLD
     hit = (actual & flagged).sum()
