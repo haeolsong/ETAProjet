@@ -166,6 +166,43 @@ def load_dep_delay() -> pd.DataFrame:
     ).drop_duplicates(subset=["flight_no", "flight_date"])
 
 
+def add_rot_delay(flights: pd.DataFrame) -> pd.DataFrame:
+    """같은 날 김해에서 먼저 나간 짝편(편명 −1)의 출발지연을 rot_delay 로 붙인다.
+
+    왕복편은 홀수 편명으로 나가 짝수 편명(+1)으로 돌아오는 경우가 많다 (LJ615 → LJ616).
+    나간 편이 늦으면 같은 기체로 돌아오는 편도 늦는다. 기체 번호가 없어 편명 규칙으로
+    추정하므로 짝이 틀린 행이 섞여 있다. 김해 출발편 자료라 국제선에도 붙는다(약 절반).
+    도착 계획시각 전에 실제로 출발한 경우만 쓴다 — 그 뒤의 정보는 예측 시점에 없다.
+    """
+    files = sorted(DATA_RAW.glob("flights_*.csv"))
+    df = pd.concat((pd.read_csv(f, dtype=str) for f in files), ignore_index=True)
+    df = df[(df["io"] == "O") & (df["depAirportCode"] == "PUS")]
+
+    keep = df["masterflightid"].isna() | (df["flightid"] == df["masterflightid"])
+    df = df[keep].drop_duplicates(subset="fid")
+    df = df[df["rmkKor"] == "출발"]
+
+    sched = pd.to_datetime(df["scheduledatetime"], format="%Y%m%d%H%M")
+    actual = pd.to_datetime(df["estimateddatetime"], format="%Y%m%d%H%M")
+    out = pd.DataFrame(
+        {
+            "out_no": df["flightid"],
+            "flight_date": sched.dt.date,
+            "out_actual": actual,
+            "rot_delay": (actual - sched).dt.total_seconds() / 60,
+        }
+    ).drop_duplicates(subset=["out_no", "flight_date"])
+
+    parts = flights["flight_no"].str.extract(r"^([A-Z0-9]{2})(\d+)$")
+    prev = parts[0] + (pd.to_numeric(parts[1]) - 1).astype("Int64").astype(str)
+
+    merged = flights.assign(out_no=prev, flight_date=flights["sched_time"].dt.date).merge(
+        out, on=["out_no", "flight_date"], how="left"
+    )
+    merged.loc[~(merged["out_actual"] < merged["sched_time"]), "rot_delay"] = np.nan
+    return merged.drop(columns=["out_no", "flight_date", "out_actual"])
+
+
 def merge(flights: pd.DataFrame, metar: pd.DataFrame) -> pd.DataFrame:
     """계획도착시각의 시(hour) 를 키로 기상 관측을 붙인다."""
     # hour·month 는 항공편 쪽에서 이미 만들었다. 기상 관측 쪽 것을 쓰면
@@ -203,6 +240,10 @@ def main() -> None:
     merged = merged.drop(columns="flight_date")
     filled = merged["dep_delay"].notna().mean() * 100
     print(f"출발지연 매칭 {filled:.1f}% (국내선 한정이라 30% 내외가 정상)")
+
+    merged = add_rot_delay(merged)
+    filled = merged["rot_delay"].notna().mean() * 100
+    print(f"회전편 지연 매칭 {filled:.1f}% (편명 −1 짝편, 50% 내외가 정상)")
 
     out = DATA_PROCESSED / "dataset.parquet"
     merged.to_parquet(out, index=False)

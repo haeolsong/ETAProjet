@@ -1,10 +1,12 @@
 """베이스라인·XGBoost 모델을 학습하고 성능을 비교한다.
 
-세 모델을 같은 코드로 돌린다. 차이는 피처 목록뿐이다.
+모델을 같은 코드로 돌린다. 차이는 피처 목록뿐이고, 단계마다 정보가 하나씩 늘어난다.
+목표는 예측 성능이다 — 쓸 수 있는 정보는 다 쓴다.
 
     베이스라인   없음(학습셋 중앙값 고정)  — 기준선
-    사전 예측    기상·노선·시간대          — 메인. 출발 전에 알 수 있는 정보만
-    이륙 후      위 + dep_delay            — 성능 상한선 참고
+    사전 예측    기상·노선·시간대          — 출발 전에 알 수 있는 정보만
+    회전편 후    위 + rot_delay            — 김해발 짝편(편명 −1)이 출발한 뒤. 국제선 포함
+    이륙 후      위 + dep_delay            — 출발지에서 이륙한 뒤. 국내선 한정
 
 시계열이므로 랜덤 분할을 쓰지 않는다. 계획도착시각 기준으로 뒤쪽을 테스트셋으로 뗀다.
 
@@ -61,6 +63,9 @@ FEATURES_PRE = [
     "dow",
     "month",
 ]
+
+# 김해에서 먼저 나간 짝편의 출발지연. 짝편이 없으면 NaN 이고 XGBoost 가 그대로 처리한다.
+FEATURES_ROT = [*FEATURES_PRE, "rot_delay"]
 
 CATEGORICAL = ["origin", "line", "airline", "cloud_cover"]
 
@@ -156,9 +161,12 @@ def main() -> None:
     # 2. 사전 예측 — 메인 모델.
     results.append(run_xgb("XGBoost 사전예측", FEATURES_PRE, train, test))
 
-    # 3. 이륙 후 — 출발지연을 아는 상태. 현재 수집 범위로는 만들 수 없다.
+    # 3. 회전편 후 — 김해발 짝편이 출발한 상태. 전체 표본에서 돌린다.
+    results.append(run_xgb("XGBoost 회전편후", FEATURES_ROT, train, test))
+
+    # 4. 이륙 후 — 출발지연까지 아는 상태. 국내선만 있어 같은 부분집합에서 비교한다.
     if args.dep_delay_only:
-        results.append(run_xgb("XGBoost 이륙후", [*FEATURES_PRE, "dep_delay"], train, test))
+        results.append(run_xgb("XGBoost 이륙후", [*FEATURES_ROT, "dep_delay"], train, test))
     else:
         print("이륙 후 모델은 --dep-delay-only 로 같은 표본에서 비교한다.\n")
 
