@@ -9,7 +9,7 @@ description: 김해공항 ETA 프로젝트의 데이터 수집 절차. METAR 기
 
 ```bash
 source venv/bin/activate
-python src/collect_metar.py --start-year 2019
+python src/collect_metar.py --start-year 2019 --origins   # --origins: 출발지 15곳 올해치도 받는다
 ```
 
 - 출처: Iowa State Mesonet ASOS 아카이브 (RKPK, 1954년~현재)
