@@ -23,6 +23,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from xgboost import XGBClassifier, XGBRegressor
@@ -94,6 +95,10 @@ PARAMS = dict(
 # 지연 경고는 회귀값이 아니라 분류기 확률로 낸다. 중앙값을 좇는 회귀는 15분을 거의 넘지 않는다.
 # 0.3 은 주간 4폴드에서 적중 47% · 오경보 57% (0.5 면 27% · 39%). 놓침과 헛경보의 교환이다.
 WARN_PROB = 0.3
+
+# 예측 구간: 하위 10%·상위 10% 분위수를 따로 맞춰 80% 구간을 낸다. 실제값이 구간 안에 든 비율
+# (포함률)이 0.8 에 가까우면 구간을 믿을 수 있다. 0.8 은 설명하기 쉬워 정한 값이고 결과를 보고 고르지 않았다.
+INTERVAL = (0.1, 0.9)
 
 # 이날부터의 수집분은 최종 검증용이다. 피처·설정을 고르는 동안(기본 실행, --weekly)에는 보지 않고,
 # --final 로 한 번만 잰다. 고르면서 본 구간의 성능은 낙관적이기 때문이다.
@@ -178,6 +183,55 @@ def run_warning(features: list[str], train: pd.DataFrame, test: pd.DataFrame) ->
     }
 
 
+def fit_interval(features: list[str], train: pd.DataFrame) -> tuple[XGBRegressor, dict, float]:
+    """INTERVAL 의 두 분위수를 맞추고, 학습 마지막 1주로 구간을 보정한다(CQR).
+
+    분위수 회귀만으로는 80% 구간의 실제 포함률이 73% 였다 — 구간이 좁게 나온다.
+    그래서 마지막 1주를 떼어 두고 나머지로 맞춘 뒤, 떼어 둔 주에서 실제값이 구간을
+    벗어난 거리의 분위수(margin)만큼 양쪽을 넓힌다. 테스트 구간은 보지 않는다.
+    predict 는 (n, 2) 를 돌려준다. 하한·상한에 margin 을 빼고 더해 쓴다.
+    """
+    cut = train["sched_time"].max() - pd.Timedelta(weeks=1)
+    fit, calib = train[train["sched_time"] <= cut], train[train["sched_time"] > cut]
+
+    x_fit = fit[features].copy()
+    cats = {}
+    for col in set(CATEGORICAL) & set(features):
+        cats[col] = pd.CategoricalDtype(x_fit[col].dropna().unique())
+        x_fit[col] = x_fit[col].astype(cats[col])
+
+    params = {**PARAMS, "objective": "reg:quantileerror", "quantile_alpha": np.array(INTERVAL)}
+    model = XGBRegressor(**params)
+    model.fit(x_fit, fit[TARGET])
+
+    # 두 분위수를 따로 맞추므로 드물게 하한이 상한보다 커진다. 정렬해서 쓴다.
+    lo, hi = np.sort(model.predict(calib[features].astype(cats)), axis=1).T
+    y = calib[TARGET].to_numpy()
+    score = np.maximum(lo - y, y - hi)
+    level = min(1.0, np.ceil((len(y) + 1) * (INTERVAL[1] - INTERVAL[0])) / len(y))
+    return model, cats, float(np.quantile(score, level))
+
+
+def run_interval(features: list[str], train: pd.DataFrame, test: pd.DataFrame) -> list[dict]:
+    """80% 예측 구간의 포함률과 평균 폭. 보정 전·후를 함께 돌려준다."""
+    model, cats, margin = fit_interval(features, train)
+    lo, hi = np.sort(model.predict(test[features].astype(cats)), axis=1).T
+    y = test[TARGET].to_numpy()
+    name = f"XGBoost {round((INTERVAL[1] - INTERVAL[0]) * 100)}% 구간"
+    rows = []
+    for label, m in [("보정 전", 0.0), ("CQR 보정", margin)]:
+        a, b = lo - m, hi + m
+        rows.append(
+            {
+                "model": f"{name}({label})",
+                "n_test": len(test),
+                "구간포함률": ((y >= a) & (y <= b)).mean(),
+                "구간폭": (b - a).mean(),
+            }
+        )
+    return rows
+
+
 def weekly(df: pd.DataFrame, subset: str) -> None:
     """마지막 4주를 한 주씩 테스트셋으로 쓴다. 각 주는 그 이전 자료 전부로 학습한다."""
     end = df["sched_time"].max().normalize() + pd.Timedelta(days=1)
@@ -194,9 +248,10 @@ def weekly(df: pd.DataFrame, subset: str) -> None:
         rows.append(evaluate("베이스라인", test[TARGET], [median] * len(test)))
         rows += [run_xgb(name, feats, train, test) for name, feats in stages]
         rows.append(run_warning(FEATURES_ROT, train, test))
+        rows += run_interval(FEATURES_ROT, train, test)
         print(f"  {a:%m-%d} 주 테스트 {len(test):,}편")
 
-    cols = ["MAE", "RMSE", "±10분비율", "적중률", "오경보율"]
+    cols = ["MAE", "RMSE", "±10분비율", "적중률", "오경보율", "구간포함률", "구간폭"]
     table = pd.DataFrame(rows).groupby("model", sort=False)[cols].mean()
     print(f"\n[{subset}] 주간 4폴드 평균 ({starts[0]:%m-%d}~{end:%m-%d})")
     print(table.round(3).to_string())
@@ -271,6 +326,9 @@ def main() -> None:
     # 지연 경고 — 회전편후까지의 정보로 15분 이상 지연 확률을 낸다.
     results.append(run_warning(FEATURES_ROT, train, test))
 
+    # 예측 구간 — 회전편후 정보로 80% 구간을 낸다. 포함률·폭만 의미가 있다.
+    results += run_interval(FEATURES_ROT, train, test)
+
     # 4. 이륙 후 — 출발지연까지 아는 상태. 국내선만 있어 같은 부분집합에서 비교한다.
     if args.dep_delay_only:
         results.append(run_xgb("XGBoost 이륙후", [*FEATURES_ROT, "dep_delay"], train, test))
@@ -283,12 +341,14 @@ def main() -> None:
     pre = table.loc[table.model == "XGBoost 사전예측", "MAE"].iloc[0]
     print(f"\n베이스라인 대비 MAE {table.MAE.iloc[0] - pre:+.2f}분")
 
-    n_delayed = table["실제지연편수"].iloc[0]
+    n_delayed = int(table["실제지연편수"].iloc[0])
     if n_delayed == 0:
         print(f"테스트셋에 {DELAY_THRESHOLD}분 이상 지연편이 없어 적중률을 낼 수 없다.")
     else:
         print(f"{DELAY_THRESHOLD}분 이상 지연 {n_delayed}편 중 잡아낸 비율:")
         for row in results:
+            if "적중률" not in row:  # 예측 구간 행
+                continue
             rate = row["적중률"]
             shown = f"{rate:.0%}" if pd.notna(rate) else "— (한 번도 경고하지 않음)"
             print(f"  {row['model']:22s} {shown}")
