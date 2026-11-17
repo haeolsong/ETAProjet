@@ -23,6 +23,10 @@ from config import DATA_PROCESSED, DATA_RAW, ICAO, ORIGIN_ICAO  # noqa: E402
 # METAR 풍향도 진북 기준이므로 자기편차 보정이 필요 없다.
 RUNWAY_BEARING = 173.95
 
+# 짝편 출발 → 돌아온 편 도착의 최소 계획 간격(분). 최단 노선(제주·김포·후쿠오카, 편도 약 55분)
+# 왕복에 지상 회전을 더한 하한이다. 이보다 짧으면 같은 기체일 수 없다.
+MIN_TURN_MIN = 120
+
 SIGNIFICANT_WX = {
     "TS": "뇌전",
     "FG": "안개",
@@ -171,8 +175,12 @@ def add_rot_delay(flights: pd.DataFrame) -> pd.DataFrame:
 
     왕복편은 홀수 편명으로 나가 짝수 편명(+1)으로 돌아오는 경우가 많다 (LJ615 → LJ616).
     나간 편이 늦으면 같은 기체로 돌아오는 편도 늦는다. 기체 번호가 없어 편명 규칙으로
-    추정하므로 짝이 틀린 행이 섞여 있다. 김해 출발편 자료라 국제선에도 붙는다(약 절반).
+    추정하므로 짝이 틀린 행이 섞여 있다. 김해 출발편 자료라 국제선에도 붙는다.
     도착 계획시각 전에 실제로 출발한 경우만 쓴다 — 그 뒤의 정보는 예측 시점에 없다.
+
+    계획 간격(짝편 출발 → 이 편 도착)이 MIN_TURN_MIN 보다 짧은 짝은 버린다. 가장 짧은
+    노선도 왕복할 수 없는 간격이라 다른 기체다. 짝이 없거나 버린 편에는 같은 항공사가
+    같은 출발지로 보낸 편 중 그 간격을 지키며 가장 늦게 나간 편을 대신 붙인다.
     """
     files = sorted(DATA_RAW.glob("flights_*.csv"))
     df = pd.concat((pd.read_csv(f, dtype=str) for f in files), ignore_index=True)
@@ -187,7 +195,10 @@ def add_rot_delay(flights: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(
         {
             "out_no": df["flightid"],
+            "prefix": df["flightid"].str[:2],
+            "dest": df["arrvAirportCode"],
             "flight_date": sched.dt.date,
+            "out_sched": sched,
             "out_actual": actual,
             "rot_delay": (actual - sched).dt.total_seconds() / 60,
         }
@@ -195,12 +206,32 @@ def add_rot_delay(flights: pd.DataFrame) -> pd.DataFrame:
 
     parts = flights["flight_no"].str.extract(r"^([A-Z0-9]{2})(\d+)$")
     prev = parts[0] + (pd.to_numeric(parts[1]) - 1).astype("Int64").astype(str)
+    turn = pd.Timedelta(minutes=MIN_TURN_MIN)
 
+    # 1) 편명 −1 짝편
     merged = flights.assign(out_no=prev, flight_date=flights["sched_time"].dt.date).merge(
-        out, on=["out_no", "flight_date"], how="left"
+        out.drop(columns=["prefix", "dest"]), on=["out_no", "flight_date"], how="left"
     )
-    merged.loc[~(merged["out_actual"] < merged["sched_time"]), "rot_delay"] = np.nan
-    return merged.drop(columns=["out_no", "flight_date", "out_actual"])
+    valid = (merged["out_actual"] < merged["sched_time"]) & (
+        merged["out_sched"] <= merged["sched_time"] - turn
+    )
+    rot = merged["rot_delay"].where(valid).to_numpy()
+
+    # 2) 대체: 같은 항공사 코드·같은 날·목적지가 이 편의 출발지인 편 중 가장 늦게 나간 편
+    cand = flights.assign(prefix=parts[0], flight_date=flights["sched_time"].dt.date).merge(
+        out, left_on=["prefix", "flight_date", "origin"], right_on=["prefix", "flight_date", "dest"]
+    )
+    cand = cand[
+        (cand["out_sched"] <= cand["sched_time"] - turn) & (cand["out_actual"] < cand["sched_time"])
+    ]
+    latest = cand.sort_values("out_sched").groupby(["flight_no", "sched_time"]).last()["rot_delay"]
+    alt = (
+        flights[["flight_no", "sched_time"]]
+        .join(latest, on=["flight_no", "sched_time"])["rot_delay"]
+        .to_numpy()
+    )
+
+    return flights.assign(rot_delay=np.where(np.isnan(rot), alt, rot))
 
 
 def add_origin_weather(flights: pd.DataFrame) -> pd.DataFrame:
@@ -296,7 +327,7 @@ def main() -> None:
 
     merged = add_rot_delay(merged)
     filled = merged["rot_delay"].notna().mean() * 100
-    print(f"회전편 지연 매칭 {filled:.1f}% (편명 −1 짝편, 50% 내외가 정상)")
+    print(f"회전편 지연 매칭 {filled:.1f}% (편명 −1 짝편 + 같은 항공사 대체, 65% 내외가 정상)")
 
     merged = add_origin_weather(merged)
     filled = merged["o_vis"].notna().mean() * 100
