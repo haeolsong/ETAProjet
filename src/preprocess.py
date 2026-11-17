@@ -242,11 +242,16 @@ def add_flight_history(flights: pd.DataFrame) -> pd.DataFrame:
 
     fn_med: 지난 운항의 지연 중앙값, fn_late: 15분 이상 지연 비율, fn_n: 지난 운항 횟수.
     같은 편명은 시간표·기종·여유시간이 거의 같아, 노선·항공사보다 촘촘한 기준이 된다.
+    fn_med7·fn_late7: 최근 7회만 본 같은 값. 시간표·기재가 바뀌면 전체 이력보다 빨리 따라간다.
     """
     flights = flights.sort_values("sched_time").reset_index(drop=True)
     past = flights.groupby("flight_no")["delay_minutes"]
     flights["fn_med"] = past.transform(lambda s: s.shift(1).expanding().median())
     flights["fn_late"] = past.transform(lambda s: (s.shift(1) >= 15).expanding().mean())
+    flights["fn_med7"] = past.transform(lambda s: s.shift(1).rolling(7, min_periods=1).median())
+    flights["fn_late7"] = past.transform(
+        lambda s: (s.shift(1) >= 15).rolling(7, min_periods=1).mean()
+    )
     flights["fn_n"] = past.cumcount()
     return flights
 

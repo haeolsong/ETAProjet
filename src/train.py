@@ -69,7 +69,8 @@ ORIGIN_WX = ["o_vis", "o_wind", "o_gust", "o_ra", "o_ts"]
 FEATURES_PRE += ORIGIN_WX
 
 # 편명별 과거 이력(그날 이전 운항분만). 주간 4폴드에서 MAE 를 평균 0.7분 줄였다.
-FLIGHT_HIST = ["fn_med", "fn_late", "fn_n"]
+# 최근 7회 이력(fn_*7)은 회전편후 기준 주간 4폴드 −0.12~−0.19분(시드 3개, 12폴드 중 11개 개선).
+FLIGHT_HIST = ["fn_med", "fn_late", "fn_n", "fn_med7", "fn_late7"]
 FEATURES_PRE += FLIGHT_HIST
 
 # 김해에서 먼저 나간 짝편의 출발지연. 짝편이 없으면 NaN 이고 XGBoost 가 그대로 처리한다.
