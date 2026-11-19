@@ -22,8 +22,10 @@ from train import (  # noqa: E402
     FEATURES_PRE,
     FEATURES_ROT,
     FLIGHT_HIST,
+    INTERVAL,
     ORIGIN_WX,
     WARN_PROB,
+    fit_interval,
     fit_warning,
     fit_xgb,
     split_by_time,
@@ -140,7 +142,10 @@ def load_stage_models(key: tuple, day):
     df = pd.read_parquet(DATASET_PATH)
     train = df[df.sched_time < pd.Timestamp(day)]
     domestic = train[train.dep_delay.notna()]
+    # 예측 구간은 학습 마지막 1주로 보정하므로, 그 앞에 맞출 자료가 1주 넘게 있어야 한다.
+    span = train.sched_time.max() - train.sched_time.min()
     return {
+        "구간": fit_interval(FEATURES_ROT, train) if span > pd.Timedelta(weeks=2) else None,
         "사전예측": fit_xgb(FEATURES_PRE, train),
         "회전편후": fit_xgb(FEATURES_ROT, train),
         "이륙후": fit_xgb([*FEATURES_ROT, "dep_delay"], domestic),
@@ -794,6 +799,24 @@ with tab_predict:
             cols[-1].caption(
                 f"{f.sched_time.iloc[0]:%H:%M} 계획 → {f.actual_time.iloc[0]:%H:%M} 도착"
             )
+
+            # 숫자 하나가 확정 예보처럼 읽히지 않도록 회전편후 정보로 낸 범위를 붙인다.
+            pct = round((INTERVAL[1] - INTERVAL[0]) * 100)
+            if m["구간"] is None:
+                st.caption(f"{pct}% 예측 구간은 학습 자료가 2주 넘게 쌓인 날부터 냅니다.")
+            else:
+                model, cats, margin = m["구간"]
+                lo, hi = sorted(model.predict(f[FEATURES_ROT].astype(cats))[0])
+                lo, hi = lo - margin, hi + margin
+                inside = lo <= actual_delay <= hi
+                st.markdown(
+                    f"**{pct}% 예측 구간 {lo:+.0f} ~ {hi:+.0f}분** (회전편후 정보) · 실제 "
+                    f"{actual_delay:+.0f}분은 구간 " + ("안" if inside else "밖")
+                )
+                st.caption(
+                    f"실제 지연이 10편 중 {pct // 10}편꼴로 이 범위에 들도록, 학습 자료의 마지막 1주로 "
+                    "폭을 보정했습니다(CQR). 한 편이 구간 밖이라고 모델이 틀린 것은 아닙니다."
+                )
 
             clf, cats = m["경고"]
             prob = float(clf.predict_proba(f[FEATURES_ROT].astype(cats))[0, 1])
